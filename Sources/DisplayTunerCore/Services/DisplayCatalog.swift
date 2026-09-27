@@ -13,7 +13,11 @@ public enum DisplayCatalog {
         let stableID = StableDisplayID.make(for: record)
         let isSidecar = SidecarHeuristic.isLikelySidecar(record)
         let category = classify(record: record, isSidecar: isSidecar)
-        let modes = parseModes(record)
+        // 排序 + 推荐标记在解析后立即完成,菜单直接使用最终顺序。
+        let modes = ModeRanker.markRecommended(
+            ModeRanker.sort(parseModes(record), isSidecar: isSidecar),
+            isSidecar: isSidecar
+        )
 
         return DisplayInfo(
             stableID: stableID,
