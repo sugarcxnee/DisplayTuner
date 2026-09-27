@@ -346,9 +346,17 @@ final class MenuModelBuilderTests: XCTestCase {
         XCTAssertNil(entry.action)
     }
 
-    func testActiveVirtualDisplayShowsRunningAndStop() {
-        let sidecar = DisplayCatalog.display(from: Fixtures.sidecarDisplay())
-        let active = VirtualDisplaySpec(width: 2360, height: 1640)
+    func testActiveVirtualDisplayShowsSwitchablePresetsAndStop() {
+        // 1180x820 基准 → 会话运行在 ×2 档(2360×1640)
+        let sidecar = DisplayCatalog.display(from: Fixtures.sidecarDisplay(modes: [
+            Fixtures.mode(1180, 820),
+        ]))
+        let active = VirtualDisplaySessionInfo(
+            sidecarStableID: sidecar.stableID,
+            spec: VirtualDisplaySpec(width: 2360, height: 1640),
+            baseWidth: 1180,
+            baseHeight: 820
+        )
         let menu = builder.build(
             displays: [sidecar],
             config: DisplayTunerConfig(),
@@ -360,10 +368,16 @@ final class MenuModelBuilderTests: XCTestCase {
 
         let advanced = find(menu.entries, title: "高级").first!
         let virtualMenu = advanced.children!.first { $0.title == "虚拟屏(实验)" }!
-        let running = virtualMenu.children!.first { $0.title.hasPrefix("运行中") }!
-        XCTAssertTrue(running.title.contains("2360×1640"))
-        XCTAssertTrue(running.hasCheckmark)
-        XCTAssertFalse(running.isEnabled)
+
+        // 当前档 ✓ 且禁用;其余档可点(切档)
+        let starts = findAction(virtualMenu.children ?? []) {
+            if case .startVirtualDisplay = $0 { return true }
+            return false
+        }
+        XCTAssertEqual(starts.count, 2, "三档中当前档无 action,其余两档可切换")
+        let current = virtualMenu.children!.first { $0.title.contains("2360×1640") }!
+        XCTAssertTrue(current.hasCheckmark)
+        XCTAssertFalse(current.isEnabled)
 
         let stops = findAction(virtualMenu.children ?? []) {
             if case .stopVirtualDisplay(let id) = $0 { return id == sidecar.stableID }
@@ -371,6 +385,41 @@ final class MenuModelBuilderTests: XCTestCase {
         }
         XCTAssertEqual(stops.count, 1)
     }
+
+    func testMirroredSidecarModesDisabledWithHint() {
+        let sidecar = DisplayCatalog.display(from: Fixtures.sidecarDisplay(modes: [
+            Fixtures.mode(1180, 820),
+        ]))
+        let active = VirtualDisplaySessionInfo(
+            sidecarStableID: sidecar.stableID,
+            spec: VirtualDisplaySpec(width: 2360, height: 1640),
+            baseWidth: 1180,
+            baseHeight: 820
+        )
+        let menu = builder.build(
+            displays: [sidecar],
+            config: DisplayTunerConfig(),
+            loginItemEnabled: false,
+            privateProbe: nil,
+            activeVirtualDisplays: [sidecar.stableID: active],
+            virtualDisplayAvailability: nil
+        )
+
+        // 提示行存在
+        XCTAssertTrue(menu.entries
+            .compactMap(\.children)
+            .flatMap { $0 }
+            .contains { $0.title.contains("虚拟屏镜像中") && !$0.isEnabled })
+
+        // 所有可选模式条目被禁用(镜像期间分辨率由虚拟屏决定)
+        let selectableModes = findAction(menu.entries) {
+            if case .selectMode = $0 { return true }
+            return false
+        }
+        XCTAssertTrue(selectableModes.allSatisfy { !$0.isEnabled }, "镜像期间所有模式条目必须禁用")
+    }
+
+
 
     func testExternalDisplayHasNoVirtualDisplayEntry() {
         let external = DisplayCatalog.display(from: Fixtures.externalDisplay())
@@ -382,6 +431,7 @@ final class MenuModelBuilderTests: XCTestCase {
         )
         XCTAssertNil(find(menu.entries, title: "虚拟屏").first, "虚拟屏入口只给 Sidecar")
     }
+
 }
 
 extension Array {

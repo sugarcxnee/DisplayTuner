@@ -23,7 +23,8 @@ public struct VirtualDisplaySpec: Equatable, Sendable {
 /// 运行中的虚拟屏句柄:持有私有对象引用(释放即销毁),记录 CGDisplayID。
 public final class VirtualDisplayHandle {
     public let displayID: UInt32
-    public let spec: VirtualDisplaySpec
+    /// 当前激活规格(切档后由工厂更新)。
+    public internal(set) var activeSpec: VirtualDisplaySpec
     /// CGVirtualDisplay 实例;置 nil 即触发 ARC release → 虚拟屏拔出。
     var retainedObject: AnyObject?
 
@@ -31,7 +32,7 @@ public final class VirtualDisplayHandle {
 
     init(displayID: UInt32, spec: VirtualDisplaySpec, object: AnyObject) {
         self.displayID = displayID
-        self.spec = spec
+        self.activeSpec = spec
         self.retainedObject = object
     }
 }
@@ -79,8 +80,11 @@ public struct VirtualDisplayAvailability: Equatable, Sendable {
 public protocol VirtualDisplayCreating: AnyObject {
     /// 只读探测:所需私有类是否已注册(无副作用)。
     func availability() -> VirtualDisplayAvailability
-    /// 创建并激活虚拟屏。任何失败都不留残留对象。
-    func create(spec: VirtualDisplaySpec) throws -> VirtualDisplayHandle
+    /// 创建并激活虚拟屏:`spec` 为首选档,`additionalModes` 一并注册进模式表,
+    /// 之后可在表内任意切档。任何失败都不留残留对象。
+    func create(spec: VirtualDisplaySpec, additionalModes: [VirtualDisplaySpec]) throws -> VirtualDisplayHandle
+    /// 原地把虚拟屏切到模式表内的另一档(公共 CG API,无需重建)。
+    func activateSpec(_ handle: VirtualDisplayHandle, spec: VirtualDisplaySpec) throws
     /// 销毁虚拟屏(幂等)。
     func destroy(_ handle: VirtualDisplayHandle)
 }
@@ -145,7 +149,7 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
         return VirtualDisplayAvailability(isAvailable: stillMissing.isEmpty, missingClasses: stillMissing)
     }
 
-    public func create(spec: VirtualDisplaySpec) throws -> VirtualDisplayHandle {
+    public func create(spec: VirtualDisplaySpec, additionalModes: [VirtualDisplaySpec] = []) throws -> VirtualDisplayHandle {
         let available = availability()
         guard available.isAvailable else {
             throw VirtualDisplayError.classesUnavailable(available.missingClasses)
@@ -153,11 +157,11 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
 
         var displayObject: AnyObject?
         do {
-            let object = try buildDisplay(spec: spec)
+            let object = try buildDisplay(spec: spec, additionalModes: additionalModes)
             displayObject = object
             let displayID = try Self.activate(object: object, spec: spec)
             logger.info(
-                "virtual display created: \(spec.key) (id \(displayID))",
+                "virtual display created: \(spec.key) with \(1 + additionalModes.filter { $0.key != spec.key }.count) mode(s) (id \(displayID))",
                 context: "VirtualDisplay"
             )
             return VirtualDisplayHandle(displayID: displayID, spec: spec, object: object)
@@ -174,7 +178,7 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
 
     public func destroy(_ handle: VirtualDisplayHandle) {
         guard !handle.isDestroyed else { return }
-        logger.info("destroying virtual display \(handle.spec.key) (id \(handle.displayID))", context: "VirtualDisplay")
+        logger.info("destroying virtual display \(handle.activeSpec.key) (id \(handle.displayID))", context: "VirtualDisplay")
         handle.retainedObject = nil
     }
 
@@ -189,7 +193,7 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
         return frameworkLoaded
     }
 
-    private func buildDisplay(spec: VirtualDisplaySpec) throws -> AnyObject {
+    private func buildDisplay(spec: VirtualDisplaySpec, additionalModes: [VirtualDisplaySpec]) throws -> AnyObject {
         let descriptor = try Self.instantiate("CGVirtualDisplayDescriptor")
         Self.send(descriptor, "setName:", VirtualDisplaySpec.displayName as NSString)
         Self.send(descriptor, "setMaxPixelsWide:", max(spec.width * 2, 4096))
@@ -208,19 +212,33 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
             Self.alloc("CGVirtualDisplay"), "initWithDescriptor:", descriptor
         )
 
-        let mode = try Self.sendObject(
-            Self.alloc("CGVirtualDisplayMode"),
-            "initWithWidth:height:refreshRate:",
-            spec.width, spec.height, spec.refreshRate
-        )
+        // 模式表:首选档在前,其余档一并注册 —— 系统设置/菜单切档才不会"闪一下被拉回"
+        let table = [spec] + additionalModes.filter { $0.key != spec.key }
+        let modes = try table.map { entry in
+            try Self.sendObject(
+                Self.alloc("CGVirtualDisplayMode"),
+                "initWithWidth:height:refreshRate:",
+                entry.width, entry.height, entry.refreshRate
+            )
+        }
         let settings = try Self.instantiate("CGVirtualDisplaySettings")
         Self.send(settings, "setHiDPI:", false)
-        Self.send(settings, "setModes:", [mode] as NSArray)
+        Self.send(settings, "setModes:", modes as NSArray)
 
         guard Self.sendBool(display, "applySettings:", settings) else {
             throw VirtualDisplayError.createFailed("applySettings returned false")
         }
         return display
+    }
+
+    /// 原地切档(公共 CG API):模式表在创建时已含多档,切换不会触发重建。
+    public func activateSpec(_ handle: VirtualDisplayHandle, spec: VirtualDisplaySpec) throws {
+        guard !handle.isDestroyed else {
+            throw VirtualDisplayError.createFailed("virtual display already destroyed")
+        }
+        try Self.activateMode(displayID: handle.displayID, spec: spec)
+        handle.activeSpec = spec
+        logger.info("virtual display switched to \(spec.key)", context: "VirtualDisplay")
     }
 
     /// 用公共 CG API 激活目标模式并验证(实验验证的事实:applySettings 只定义模式表,
@@ -236,7 +254,12 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
         guard displayID != 0 else {
             throw VirtualDisplayError.createFailed("displayID not assigned")
         }
+        try activateMode(displayID: displayID, spec: spec)
+        return displayID
+    }
 
+    /// 公共 CG API:配置目标模式 + 应用后验证。
+    private static func activateMode(displayID: UInt32, spec: VirtualDisplaySpec) throws {
         guard let modes = CGDisplayCopyAllDisplayModes(displayID, nil) as? [CGDisplayMode],
               let target = modes.first(where: {
                   Int($0.width) == spec.width && Int($0.height) == spec.height
@@ -265,7 +288,6 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
                 .map { "\($0.width)x\($0.height)" } ?? "<none>"
             throw VirtualDisplayError.verificationFailed(expected: spec.key, actual: actualKey)
         }
-        return displayID
     }
 
     // MARK: - objc_msgSend 桥(签名固定,逐个声明)

@@ -54,6 +54,9 @@ final class SafetyAlertPresenter: NSObject {
             showVirtualConfirmation(spec: spec, sidecarStableID: sidecarStableID)
         case .confirmed:
             break
+        case .resolutionChanged:
+            // 原地切档即时生效、失败自动回退,无需确认框
+            break
         case .stopped, .failed:
             if isShowingAlert {
                 NSApp.stopModal(withCode: .abort)

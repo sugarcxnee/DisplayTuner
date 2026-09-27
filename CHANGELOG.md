@@ -5,6 +5,21 @@
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-27
+
+### Fixed
+
+- **修复"虚拟显示器更改不了分辨率,改了马上被切回"**:
+  v0.2.0/0.2.1 创建虚拟屏时只注册了单一模式,表外分辨率对系统是非法模式,
+  应用后立刻被拉回。现在创建时把 ×1.5/×2/×2.5 全部档位注册进模式表。
+- **运行中原地切档**:同一 Sidecar 上再次选择档位 = 模式表内纯 CG 切换,
+  不重建虚拟屏、不打断镜像、失败自动切回旧档;菜单"虚拟屏(实验)"运行中
+  直接显示三档(当前档 ✓)。真机验证:切档后 2 秒/2.5 秒读数稳定不回弹。
+- **镜像期锁定 Sidecar 模式切换**:虚拟屏镜像中,Sidecar 的模式项在菜单里
+  禁用并提示"分辨率由虚拟屏决定";`selectMode` 与自动恢复同样拦截/跳过,
+  防止与镜像约束互相打架导致的"闪一下切回来"。
+- 档位计算改用会话启动时的基准分辨率(镜像期间 Sidecar 实时模式会漂移)。
+
 ## [0.2.1] - 2026-09-27
 
 ### Fixed
@@ -83,7 +98,8 @@
 - 只有用户确认保留的模式才写入持久化配置;
 - 不直接链接私有框架;私有 API 默认关闭;App Store 分发风险已在 README 声明。
 
-[Unreleased]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Sugarcxne/DisplayTuner/releases/tag/v0.1.0

@@ -406,6 +406,92 @@ final class TunerViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.virtualDisplayCoordinator.activeSession)
     }
 
+    func testStartVirtualDisplayRegistersFullModeTable() {
+        viewModel.refreshDisplays()
+        // sidecar 当前 1920x1080 → 档位表 2880x1620 / 3840x2160 / 4800x2700
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: sidecarDisplay.stableID,
+            width: 3840,
+            height: 2160
+        ))
+
+        XCTAssertEqual(virtualFactory.modeTables.count, 1)
+        XCTAssertEqual(virtualFactory.modeTables[0].map(\.key), ["3840x2160", "2880x1620", "4800x2700"],
+                       "模式表必须含全部档位,否则运行中切档会被拉回")
+    }
+
+    func testSwitchResolutionWhileRunningDoesNotRebuild() {
+        viewModel.refreshDisplays()
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: sidecarDisplay.stableID,
+            width: 3840,
+            height: 2160
+        ))
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: sidecarDisplay.stableID,
+            width: 2880,
+            height: 1620
+        ))
+
+        XCTAssertEqual(virtualFactory.createdSpecs.count, 1, "切档不重建")
+        XCTAssertEqual(virtualFactory.destroyedIDs.count, 0)
+        XCTAssertEqual(virtualFactory.activateCalls, ["101:2880x1620"])
+        XCTAssertEqual(virtualMirror.mirrored.count, 1, "镜像不被打断")
+    }
+
+    func testResolutionChangedUpdatesPreference() {
+        viewModel.refreshDisplays()
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: sidecarDisplay.stableID,
+            width: 3840,
+            height: 2160
+        ))
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: sidecarDisplay.stableID,
+            width: 2880,
+            height: 1620
+        ))
+
+        XCTAssertEqual(configStore.config.perDisplay[sidecarDisplay.stableID]?.virtualDisplayWidth, 2880)
+        XCTAssertEqual(configStore.config.perDisplay[sidecarDisplay.stableID]?.virtualDisplayHeight, 1620)
+    }
+
+    func testSelectModeRejectedWhileMirroringVirtualDisplay() {
+        viewModel.refreshDisplays()
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: sidecarDisplay.stableID,
+            width: 3840,
+            height: 2160
+        ))
+        let target = sidecarDisplay.modes.first { !$0.isCurrent }!
+
+        viewModel.perform(.selectMode(
+            displayStableID: sidecarDisplay.stableID,
+            modeKey: target.modeKey
+        ))
+
+        XCTAssertTrue(controller.applyCalls.isEmpty, "镜像期间 Sidecar 模式切换必须被拦截")
+    }
+
+    func testAutoRestoreSkipsSidecarMirroringVirtualDisplay() {
+        var config = configStore.config
+        config.perDisplay[sidecarDisplay.stableID] = PerDisplayConfig(
+            modeKey: sidecarDisplay.modes.first { !$0.isCurrent }?.modeKey
+        )
+        configStore.config = config
+
+        viewModel.refreshDisplays()
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: sidecarDisplay.stableID,
+            width: 3840,
+            height: 2160
+        ))
+        viewModel.autoRestoreIfNeeded()
+
+        XCTAssertTrue(controller.applyCalls.isEmpty,
+                      "镜像会话中的 Sidecar 不能自动恢复模式(会和镜像约束打架)")
+    }
+
     func testStopVirtualDisplayViaMenu() {
         viewModel.refreshDisplays()
         viewModel.perform(.startVirtualDisplay(

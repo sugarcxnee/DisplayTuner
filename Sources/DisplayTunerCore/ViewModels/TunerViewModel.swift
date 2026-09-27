@@ -88,9 +88,9 @@ public final class TunerViewModel {
         let probe = config.experimentalSidecar
             ? (enhancer?.lastProbeReport ?? enhancer?.probePrivateStatus())
             : nil
-        var activeVirtual: [String: VirtualDisplaySpec] = [:]
+        var activeVirtual: [String: VirtualDisplaySessionInfo] = [:]
         if let session = virtualDisplayCoordinator.activeSession {
-            activeVirtual[session.sidecarStableID] = session.spec
+            activeVirtual[session.sidecarStableID] = session
         }
         menuModel = menuBuilder.build(
             displays: displays,
@@ -176,6 +176,14 @@ public final class TunerViewModel {
     // MARK: - 模式选择
 
     public func selectMode(_ modeKey: String, on stableID: String) {
+        // 镜像会话中的 Sidecar:模式由虚拟屏决定,手动切换会被镜像约束拉回
+        if virtualDisplayCoordinator.activeSession?.sidecarStableID == stableID {
+            logger.info(
+                "mode change rejected for \(PrivacyRedactor.shortHash(stableID)): mirroring virtual display",
+                context: "ViewModel"
+            )
+            return
+        }
         guard let display = displays.first(where: { $0.stableID == stableID }) else {
             logger.error("display \(PrivacyRedactor.shortHash(stableID)) vanished before applying", context: "ViewModel")
             return
@@ -223,6 +231,13 @@ public final class TunerViewModel {
     // MARK: - 虚拟屏
 
     private func startVirtualDisplay(width: Int, height: Int, on stableID: String) {
+        // 已有会话 → 原地切档(模式表在创建时已含全部档位)
+        if let active = virtualDisplayCoordinator.activeSession, active.sidecarStableID == stableID {
+            virtualDisplayCoordinator.changeResolution(
+                to: VirtualDisplaySpec(width: width, height: height)
+            )
+            return
+        }
         guard let display = displays.first(where: { $0.stableID == stableID && $0.isSidecar }) else {
             logger.error(
                 "virtual display target \(PrivacyRedactor.shortHash(stableID)) is not a connected sidecar",
@@ -231,7 +246,9 @@ public final class TunerViewModel {
             return
         }
         let spec = VirtualDisplaySpec(width: width, height: height)
-        virtualDisplayCoordinator.start(spec: spec, mirroring: display)
+        // 模式表包含全部档位,运行中可原地切换(单模式表会导致"切一下被拉回")
+        let table = VirtualDisplayPresets.presets(for: display).map(\.spec)
+        virtualDisplayCoordinator.start(spec: spec, additionalModes: table, mirroring: display)
     }
 
     private func toggleExperimentalSidecar() {
@@ -255,6 +272,10 @@ public final class TunerViewModel {
     public func autoRestoreIfNeeded() {
         guard configStore.config.autoRestore else { return }
         for display in displays {
+            // 镜像会话中的 Sidecar:自动恢复会与镜像约束打架,跳过
+            if virtualDisplayCoordinator.activeSession?.sidecarStableID == display.stableID {
+                continue
+            }
             guard let savedKey = configStore.config.perDisplay[display.stableID]?.modeKey else {
                 continue
             }
@@ -322,14 +343,17 @@ extension TunerViewModel: VirtualDisplayCoordinatorDelegate {
         didProduce outcome: VirtualDisplayOutcome
     ) {
         onVirtualOutcome?(outcome)
-        if case .confirmed(let spec, let stableID) = outcome {
-            // 记录用户确认过的虚拟屏偏好(仅偏好,不做开机自动重建)
+        switch outcome {
+        case .confirmed(let spec, let stableID), .resolutionChanged(let spec, let stableID):
+            // 记录用户确认/选择的虚拟屏偏好(仅偏好,不做开机自动重建)
             var config = configStore.config
             var perDisplay = config.perDisplay[stableID] ?? PerDisplayConfig()
             perDisplay.virtualDisplayWidth = spec.width
             perDisplay.virtualDisplayHeight = spec.height
             config.perDisplay[stableID] = perDisplay
             configStore.save(config)
+        case .started, .stopped, .failed:
+            break
         }
         refreshDisplays()
     }

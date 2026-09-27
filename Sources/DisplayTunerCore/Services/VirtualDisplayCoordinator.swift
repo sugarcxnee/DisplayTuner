@@ -15,18 +15,29 @@ public enum VirtualDisplayOutcome: Equatable {
     case started(spec: VirtualDisplaySpec, virtualDisplayID: UInt32, sidecarStableID: String)
     /// 用户确认保留。
     case confirmed(spec: VirtualDisplaySpec, sidecarStableID: String)
+    /// 运行中原地切档成功(模式表内纯 CG 切换,失败会自动回退并报告 failed)。
+    case resolutionChanged(spec: VirtualDisplaySpec, sidecarStableID: String)
     /// 会话结束(倒计时/用户/断开/取代);teardownError 非空表示解除镜像失败(Sidecar 可能已断),虚拟屏仍已销毁。
     case stopped(sidecarStableID: String, reason: VirtualDisplayStopReason, teardownError: String?)
-    /// 启动失败(已清理,无残留)。
+    /// 启动/切档失败(已清理或已回退,无残留)。
     case failed(sidecarStableID: String, error: String)
 
     var sidecarStableID: String {
         switch self {
-        case .started(_, _, let id), .confirmed(_, let id),
+        case .started(_, _, let id), .confirmed(_, let id), .resolutionChanged(_, let id),
              .stopped(let id, _, _), .failed(let id, _):
             return id
         }
     }
+}
+
+/// 活动会话的公开信息:目标 Sidecar、当前激活规格、启动时的基准分辨率
+/// (镜像期间 Sidecar 的实时模式会漂移,档位计算必须用基准)。
+public struct VirtualDisplaySessionInfo: Equatable, Sendable {
+    public let sidecarStableID: String
+    public let spec: VirtualDisplaySpec
+    public let baseWidth: Int
+    public let baseHeight: Int
 }
 
 public protocol VirtualDisplayCoordinatorDelegate: AnyObject {
@@ -40,8 +51,9 @@ public protocol VirtualDisplayCoordinatorDelegate: AnyObject {
 ///
 /// 生命周期:idle → starting → pendingConfirmation → confirmed / stopped。
 /// 创建虚拟屏 + 镜像 = 一次事务;10 秒倒计时未确认则解除镜像并销毁虚拟屏;
-/// 所有操作幂等;Sidecar 断开导致解除镜像失败时如实记录,虚拟屏依然销毁。
-/// 预期在主线程调用。
+/// 同一 Sidecar 上再次 start 视为**原地切档**(模式表内纯 CG 切换,不重建、
+/// 不倒计时,失败立即切回旧档);所有操作幂等;Sidecar 断开导致解除镜像失败时
+/// 如实记录,虚拟屏依然销毁。预期在主线程调用。
 public final class VirtualDisplayCoordinator {
 
     public static let defaultConfirmInterval: TimeInterval = 10
@@ -58,6 +70,8 @@ public final class VirtualDisplayCoordinator {
         let sidecarStableID: String
         let sidecarDisplayID: UInt32
         let handle: VirtualDisplayHandle
+        let baseWidth: Int
+        let baseHeight: Int
         var countdown: Cancellable?
     }
 
@@ -77,9 +91,16 @@ public final class VirtualDisplayCoordinator {
         self.confirmInterval = max(1, confirmInterval)
     }
 
-    /// 当前活动虚拟屏(稳定 ID + 规格);无会话时为 nil。
-    public var activeSession: (sidecarStableID: String, spec: VirtualDisplaySpec)? {
-        session.map { ($0.sidecarStableID, $0.handle.spec) }
+    /// 当前活动会话;无会话时为 nil。
+    public var activeSession: VirtualDisplaySessionInfo? {
+        session.map {
+            VirtualDisplaySessionInfo(
+                sidecarStableID: $0.sidecarStableID,
+                spec: $0.handle.activeSpec,
+                baseWidth: $0.baseWidth,
+                baseHeight: $0.baseHeight
+            )
+        }
     }
 
     /// 活动虚拟屏的 CGDisplayID(枚举时用于把它从显示器列表里过滤掉)。
@@ -88,16 +109,26 @@ public final class VirtualDisplayCoordinator {
     /// 是否还有未确认(倒计时运行中)的会话;确认保留后为 false,但仍可手动停止。
     public var hasPendingConfirmation: Bool { session?.countdown != nil }
 
-    /// 启动:创建虚拟屏 → 把 sidecar 镜像到它 → 验证镜像成立 → 启动倒计时。
-    public func start(spec: VirtualDisplaySpec, mirroring sidecar: DisplayInfo) {
-        if session != nil {
-            logger.info("superseding active virtual display session", context: "VirtualCoordinator")
+    /// 启动/切档。
+    /// - 同一 Sidecar 已有会话 → 原地切档(`changeResolution`);
+    /// - 其他情况(Sidecar 换了/无会话)→ 全新创建,旧的按 superseded 停止。
+    public func start(
+        spec: VirtualDisplaySpec,
+        additionalModes: [VirtualDisplaySpec] = [],
+        mirroring sidecar: DisplayInfo
+    ) {
+        if let existing = session {
+            if existing.sidecarStableID == sidecar.stableID {
+                changeResolution(to: spec)
+                return
+            }
+            logger.info("superseding active virtual display session (different sidecar)", context: "VirtualCoordinator")
             stop(reason: .superseded)
         }
 
         var created: VirtualDisplayHandle?
         do {
-            let handle = try factory.create(spec: spec)
+            let handle = try factory.create(spec: spec, additionalModes: additionalModes)
             created = handle
             try mirror.mirror(display: sidecar.displayID, toMaster: handle.displayID)
 
@@ -106,10 +137,13 @@ public final class VirtualDisplayCoordinator {
                 throw VirtualDisplayError.createFailed("mirror did not take effect")
             }
 
+            let base = sidecar.currentMode
             var newSession = Session(
                 sidecarStableID: sidecar.stableID,
                 sidecarDisplayID: sidecar.displayID,
                 handle: handle,
+                baseWidth: base?.width ?? spec.width,
+                baseHeight: base?.height ?? spec.height,
                 countdown: nil
             )
             newSession.countdown = scheduler.schedule(after: confirmInterval) { [weak self] in
@@ -138,18 +172,49 @@ public final class VirtualDisplayCoordinator {
         }
     }
 
+    /// 原地切档:模式表内纯 CG 切换,不重建虚拟屏、不打断镜像;
+    /// 失败立即切回旧档并报告。无倒计时(切换是即时的、可无损回退)。
+    public func changeResolution(to spec: VirtualDisplaySpec) {
+        guard let current = session else { return }
+        let previousSpec = current.handle.activeSpec
+        guard previousSpec.key != spec.key else {
+            logger.debug("virtual display already at \(spec.key)", context: "VirtualCoordinator")
+            return
+        }
+
+        do {
+            try factory.activateSpec(current.handle, spec: spec)
+            logger.info(
+                "virtual display resolution changed \(previousSpec.key) → \(spec.key)",
+                context: "VirtualCoordinator"
+            )
+            notify(.resolutionChanged(spec: spec, sidecarStableID: current.sidecarStableID))
+        } catch {
+            logger.error(
+                "resolution change to \(spec.key) failed: \(error) — reverting to \(previousSpec.key)",
+                context: "VirtualCoordinator"
+            )
+            do {
+                try factory.activateSpec(current.handle, spec: previousSpec)
+            } catch {
+                logger.error("revert to \(previousSpec.key) also failed: \(error)", context: "VirtualCoordinator")
+            }
+            notify(.failed(sidecarStableID: current.sidecarStableID, error: "\(error)"))
+        }
+    }
+
     /// 确认保留当前会话。
     public func confirmActive() {
         guard let current = session else { return }
         current.countdown?.cancel()
         session?.countdown = nil
-        // 注意:确认后仍保留 session(activeSession 非空驱动菜单"运行中"状态),
-        // 只是不再自动回滚;用户仍可手动停止。
+        // 确认后仍保留 session(activeSession 驱动菜单"运行中"状态),
+        // 只是不再自动回滚;用户仍可手动停止或切档。
         logger.info(
-            "virtual display \(current.handle.spec.key) confirmed on \(current.sidecarStableID)",
+            "virtual display \(current.handle.activeSpec.key) confirmed on \(current.sidecarStableID)",
             context: "VirtualCoordinator"
         )
-        notify(.confirmed(spec: current.handle.spec, sidecarStableID: current.sidecarStableID))
+        notify(.confirmed(spec: current.handle.activeSpec, sidecarStableID: current.sidecarStableID))
     }
 
     /// 停止会话并清理(幂等):解除镜像 → 销毁虚拟屏。
@@ -171,7 +236,7 @@ public final class VirtualDisplayCoordinator {
         }
         factory.destroy(current.handle)
         logger.info(
-            "virtual display \(current.handle.spec.key) stopped, reason=\(reason.rawValue)",
+            "virtual display \(current.handle.activeSpec.key) stopped, reason=\(reason.rawValue)",
             context: "VirtualCoordinator"
         )
         notify(.stopped(

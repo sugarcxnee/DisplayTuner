@@ -5,8 +5,13 @@ import XCTest
 final class MockVirtualDisplayFactory: VirtualDisplayCreating {
     var availabilityResult: VirtualDisplayAvailability
     var createError: Error?
+    var activateError: Error?
     private(set) var createdSpecs: [VirtualDisplaySpec] = []
+    /// 每次 create 注册的完整模式表。
+    private(set) var modeTables: [[VirtualDisplaySpec]] = []
     private(set) var destroyedIDs: [UInt32] = []
+    /// activateSpec 调用记录:"displayID:specKey"。
+    private(set) var activateCalls: [String] = []
     private var nextID: UInt32 = 100
 
     init(available: Bool = true) {
@@ -18,11 +23,26 @@ final class MockVirtualDisplayFactory: VirtualDisplayCreating {
 
     func availability() -> VirtualDisplayAvailability { availabilityResult }
 
-    func create(spec: VirtualDisplaySpec) throws -> VirtualDisplayHandle {
+    func create(spec: VirtualDisplaySpec, additionalModes: [VirtualDisplaySpec]) throws -> VirtualDisplayHandle {
         if let createError = createError { throw createError }
         createdSpecs.append(spec)
+        var table = [spec]
+        for mode in additionalModes where mode.key != spec.key {
+            table.append(mode)
+        }
+        modeTables.append(table)
         nextID += 1
         return VirtualDisplayHandle(displayID: nextID, spec: spec, object: NSObject())
+    }
+
+    func activateSpec(_ handle: VirtualDisplayHandle, spec: VirtualDisplaySpec) throws {
+        if let activateError = activateError { throw activateError }
+        guard let table = modeTables.max(by: { $0.count < $1.count }),
+              table.contains(where: { $0.key == spec.key }) else {
+            throw VirtualDisplayError.activationFailed("mode \(spec.key) not in table")
+        }
+        activateCalls.append("\(handle.displayID):\(spec.key)")
+        handle.activeSpec = spec
     }
 
     func destroy(_ handle: VirtualDisplayHandle) {
@@ -196,18 +216,72 @@ final class VirtualDisplayCoordinatorTests: XCTestCase {
 
     // MARK: - 会话取代与断开
 
-    func testNewStartSupersedesActiveSession() {
+    func testNewStartOnDifferentSidecarSupersedesActiveSession() {
+        // 不同 Sidecar 上的新会话才取代旧会话(同 Sidecar 走原地切档)
+        let secondSidecar = DisplayCatalog.display(from: Fixtures.sidecarDisplay(displayID: 22))
         coordinator.start(spec: spec, mirroring: sidecar)
         let second = VirtualDisplaySpec(width: 1770, height: 1230)
-        coordinator.start(spec: second, mirroring: sidecar)
+        coordinator.start(spec: second, mirroring: secondSidecar)
 
         XCTAssertEqual(recorder.outcomes.count, 3)
         XCTAssertEqual(
             recorder.outcomes[1],
             .stopped(sidecarStableID: sidecar.stableID, reason: .superseded, teardownError: nil)
         )
+        XCTAssertEqual(recorder.outcomes.last,
+                       .started(spec: second, virtualDisplayID: 102, sidecarStableID: secondSidecar.stableID))
         XCTAssertEqual(factory.createdSpecs.count, 2)
         XCTAssertEqual(factory.destroyedIDs.count, 1)
+    }
+
+    // MARK: - 原地切档
+
+    func testChangeResolutionSwitchesInPlaceWithoutRebuild() {
+        let table = [spec, VirtualDisplaySpec(width: 1770, height: 1230)]
+        coordinator.start(spec: spec, additionalModes: Array(table.dropFirst()), mirroring: sidecar)
+        coordinator.confirmActive()
+
+        coordinator.changeResolution(to: VirtualDisplaySpec(width: 1770, height: 1230))
+
+        XCTAssertEqual(factory.activateCalls, ["101:1770x1230"], "纯 CG 切换")
+        XCTAssertEqual(factory.createdSpecs.count, 1, "不重建")
+        XCTAssertEqual(factory.destroyedIDs.count, 0, "不销毁")
+        XCTAssertEqual(mirror.mirrored.count, 1, "镜像不受影响")
+        XCTAssertEqual(
+            recorder.outcomes.last,
+            .resolutionChanged(spec: VirtualDisplaySpec(width: 1770, height: 1230), sidecarStableID: sidecar.stableID)
+        )
+        XCTAssertEqual(coordinator.activeSession?.spec.key, "1770x1230")
+    }
+
+    func testStartSameSidecarRoutesToChangeResolution() {
+        coordinator.start(spec: spec, mirroring: sidecar)
+        let other = VirtualDisplaySpec(width: 1770, height: 1230)
+        coordinator.start(spec: other, mirroring: sidecar)
+
+        XCTAssertEqual(factory.createdSpecs.count, 1, "同 Sidecar 再 start = 切档,不重建")
+        XCTAssertEqual(factory.activateCalls.count, 1)
+        XCTAssertEqual(factory.destroyedIDs.count, 0)
+    }
+
+    func testChangeResolutionFailureRevertsToPreviousSpec() {
+        coordinator.start(spec: spec, mirroring: sidecar)
+        factory.activateError = VirtualDisplayError.activationFailed("boom")
+
+        coordinator.changeResolution(to: VirtualDisplaySpec(width: 1770, height: 1230))
+
+        guard case .failed(_, let error) = recorder.outcomes.last ?? .failed(sidecarStableID: "", error: "") else {
+            return XCTFail("切档失败应报告 failed")
+        }
+        XCTAssertTrue(error.contains("boom"))
+        XCTAssertEqual(coordinator.activeSession?.spec.key, spec.key, "失败后保持旧档")
+    }
+
+    func testChangeResolutionToSameSpecIsNoop() {
+        coordinator.start(spec: spec, mirroring: sidecar)
+        coordinator.changeResolution(to: spec)
+
+        XCTAssertTrue(factory.activateCalls.isEmpty)
     }
 
     func testUnmirrorFailureStillDestroysVirtualDisplay() {

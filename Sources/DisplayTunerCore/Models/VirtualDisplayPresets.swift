@@ -20,10 +20,17 @@ public enum VirtualDisplayPresets {
         guard let current = display.currentMode, current.width > 0, current.height > 0 else {
             return []
         }
+        return presets(baseWidth: current.width, baseHeight: current.height)
+    }
+
+    /// 基于基准分辨率(会话启动时的 Sidecar 逻辑分辨率)计算档位。
+    /// 镜像期间 Sidecar 实时模式会漂移,必须用基准。
+    public static func presets(baseWidth: Int, baseHeight: Int) -> [Preset] {
+        guard baseWidth > 0, baseHeight > 0 else { return [] }
         return [
-            Preset(spec: scaled(current.width, current.height, 1.5), scale: 1.5, isRecommended: false),
-            Preset(spec: scaled(current.width, current.height, 2.0), scale: 2.0, isRecommended: true),
-            Preset(spec: scaled(current.width, current.height, 2.5), scale: 2.5, isRecommended: false),
+            Preset(spec: scaled(baseWidth, baseHeight, 1.5), scale: 1.5, isRecommended: false),
+            Preset(spec: scaled(baseWidth, baseHeight, 2.0), scale: 2.0, isRecommended: true),
+            Preset(spec: scaled(baseWidth, baseHeight, 2.5), scale: 2.5, isRecommended: false),
         ]
     }
 

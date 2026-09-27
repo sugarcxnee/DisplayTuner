@@ -11,7 +11,7 @@ public final class MenuModelBuilder {
     ///   - loginItemEnabled: 开机启动当前状态。
     ///   - privateProbe: 私有符号探测报告(实验开关开启且已探测时提供)。
     ///   - extraModes: 实验增强揭示的额外模式,按稳定 ID 索引。
-    ///   - activeVirtualDisplays: 运行中的虚拟屏会话(稳定 ID → 规格)。
+    ///   - activeVirtualDisplays: 运行中的虚拟屏会话(稳定 ID → 会话信息)。
     ///   - virtualDisplayAvailability: 虚拟屏能力报告(nil = 未探测)。
     public func build(
         displays: [DisplayInfo],
@@ -19,7 +19,7 @@ public final class MenuModelBuilder {
         loginItemEnabled: Bool,
         privateProbe: PrivateSymbolReport?,
         extraModes: [String: [DisplayModeInfo]] = [:],
-        activeVirtualDisplays: [String: VirtualDisplaySpec] = [:],
+        activeVirtualDisplays: [String: VirtualDisplaySessionInfo] = [:],
         virtualDisplayAvailability: VirtualDisplayAvailability? = nil
     ) -> MenuModel {
         var entries: [MenuEntry] = []
@@ -38,7 +38,7 @@ public final class MenuModelBuilder {
                     display,
                     config: config,
                     extraModes: extraModes[display.stableID] ?? [],
-                    activeVirtualDisplay: activeVirtualDisplays[display.stableID],
+                    activeSession: activeVirtualDisplays[display.stableID],
                     virtualDisplayAvailability: virtualDisplayAvailability
                 ))
             }
@@ -87,10 +87,11 @@ public final class MenuModelBuilder {
         _ display: DisplayInfo,
         config: DisplayTunerConfig,
         extraModes: [DisplayModeInfo],
-        activeVirtualDisplay: VirtualDisplaySpec?,
+        activeSession: VirtualDisplaySessionInfo?,
         virtualDisplayAvailability: VirtualDisplayAvailability?
     ) -> MenuEntry {
         let perDisplay = config.perDisplay[display.stableID] ?? PerDisplayConfig()
+        let mirroringVirtual = activeSession != nil
         let filtered = ModeRanker.filter(
             display.modes,
             by: perDisplay.filters,
@@ -105,16 +106,22 @@ public final class MenuModelBuilder {
         // 当前模式信息行
         let currentTitle = display.currentMode.map { "当前模式:\($0.title)" } ?? "当前模式:未知"
         children.append(MenuEntry(title: currentTitle, isEnabled: false))
+        if mirroringVirtual {
+            children.append(MenuEntry(
+                title: "虚拟屏镜像中 — 分辨率由虚拟屏决定,请切换虚拟屏档位或停止虚拟屏",
+                isEnabled: false
+            ))
+        }
         children.append(.separator())
 
         // 推荐分组:当前模式(若有)置顶 + 其余推荐
         var recommendedItems: [MenuEntry] = []
         if let current = current {
-            recommendedItems.append(modeEntry(current, display: display, isCurrent: true))
+            recommendedItems.append(modeEntry(current, display: display, isCurrent: true, mirroringVirtual: mirroringVirtual))
         }
         recommendedItems.append(contentsOf: recommended
             .filter { !$0.isCurrent }
-            .map { modeEntry($0, display: display, isCurrent: false) })
+            .map { modeEntry($0, display: display, isCurrent: false, mirroringVirtual: mirroringVirtual) })
         if !recommendedItems.isEmpty {
             children.append(submenu(title: "推荐模式", items: recommendedItems))
         }
@@ -123,7 +130,7 @@ public final class MenuModelBuilder {
         if !others.isEmpty {
             children.append(submenu(
                 title: "其他模式",
-                items: others.map { modeEntry($0, display: display, isCurrent: false) }
+                items: others.map { modeEntry($0, display: display, isCurrent: false, mirroringVirtual: mirroringVirtual) }
             ))
         }
 
@@ -140,7 +147,7 @@ public final class MenuModelBuilder {
         if config.experimentalSidecar, !extraModes.isEmpty {
             children.append(submenu(
                 title: "增强模式(实验)",
-                items: extraModes.map { modeEntry($0, display: display, isCurrent: false) }
+                items: extraModes.map { modeEntry($0, display: display, isCurrent: false, mirroringVirtual: mirroringVirtual) }
             ))
         }
 
@@ -162,7 +169,7 @@ public final class MenuModelBuilder {
         if display.isSidecar {
             advancedChildren.append(virtualDisplayEntry(
                 display,
-                activeSpec: activeVirtualDisplay,
+                activeSession: activeSession,
                 availability: virtualDisplayAvailability
             ))
         }
@@ -191,13 +198,14 @@ public final class MenuModelBuilder {
     private func modeEntry(
         _ mode: DisplayModeInfo,
         display: DisplayInfo,
-        isCurrent: Bool
+        isCurrent: Bool,
+        mirroringVirtual: Bool = false
     ) -> MenuEntry {
         var title = mode.title
         if !mode.isSafe { title += "(未验证安全)" }
         return MenuEntry(
             title: title,
-            isEnabled: !isCurrent,
+            isEnabled: !isCurrent && !mirroringVirtual,
             state: isCurrent ? .on : .none,
             action: isCurrent
                 ? nil
@@ -209,7 +217,7 @@ public final class MenuModelBuilder {
 
     private func virtualDisplayEntry(
         _ display: DisplayInfo,
-        activeSpec: VirtualDisplaySpec?,
+        activeSession: VirtualDisplaySessionInfo?,
         availability: VirtualDisplayAvailability?
     ) -> MenuEntry {
         // 能力不可用:如实提示,不显示档位
@@ -217,18 +225,34 @@ public final class MenuModelBuilder {
             return MenuEntry(title: "虚拟屏(实验)— \(availability.statusDescription)", isEnabled: false)
         }
 
-        if let activeSpec = activeSpec {
-            return MenuEntry(title: "虚拟屏(实验)", children: [
-                MenuEntry(
-                    title: "运行中 \(activeSpec.title)",
-                    isEnabled: false,
-                    state: .on
-                ),
-                MenuEntry(
-                    title: "停止虚拟屏",
-                    action: .stopVirtualDisplay(displayStableID: display.stableID)
-                ),
-            ])
+        if let active = activeSession {
+            // 运行中:档位列表(当前档 ✓、其余可原地切换)+ 停止
+            // 镜像期间 Sidecar 实时模式会漂移,档位基于会话基准分辨率计算
+            let presets = VirtualDisplayPresets.presets(
+                baseWidth: active.baseWidth,
+                baseHeight: active.baseHeight
+            )
+            var items: [MenuEntry] = presets.map { preset in
+                let isActive = preset.spec.key == active.spec.key
+                return MenuEntry(
+                    title: preset.title,
+                    isEnabled: !isActive,
+                    state: isActive ? .on : .none,
+                    action: isActive
+                        ? nil
+                        : .startVirtualDisplay(
+                            displayStableID: active.sidecarStableID,
+                            width: preset.spec.width,
+                            height: preset.spec.height
+                        )
+                )
+            }
+            items.append(.separator())
+            items.append(MenuEntry(
+                title: "停止虚拟屏",
+                action: .stopVirtualDisplay(displayStableID: active.sidecarStableID)
+            ))
+            return MenuEntry(title: "虚拟屏(实验)", children: items)
         }
 
         let presets = VirtualDisplayPresets.presets(for: display)
