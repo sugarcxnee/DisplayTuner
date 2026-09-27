@@ -13,6 +13,9 @@ public final class TunerViewModel {
 
     public let coordinator: ModeChangeCoordinator
 
+    /// 模式变更结果的外部观察点:App 壳用它驱动安全确认框(NSAlert)。
+    public var onOutcome: ((ModeChangeOutcome) -> Void)?
+
     private let displayService: DisplayService
     private let configStore: ConfigStore
     private let enhancer: SidecarEnhancer?
@@ -242,6 +245,7 @@ extension TunerViewModel: ModeChangeCoordinatorDelegate {
 
     public func coordinator(_ coordinator: ModeChangeCoordinator, didProduce outcome: ModeChangeOutcome) {
         lastOutcome = outcome
+        onOutcome?(outcome)
         switch outcome {
         case .confirmed(let stableID, let modeKey):
             // 只有用户确认保留的模式才写入持久化配置
