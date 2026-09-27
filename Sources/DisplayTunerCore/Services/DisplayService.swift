@@ -5,6 +5,11 @@ import CoreGraphics
 public protocol DisplayService: AnyObject {
     /// 当前在线显示器快照;系统异常时返回空数组(不崩溃)。
     func snapshotDisplays() -> [DisplayInfo]
+
+    /// 读取指定显示器的原始模式列表。
+    /// `includeHidden` 为 true 时以 `kCGDisplayShowDuplicateLowResolutionModes`
+    /// 选项枚举,可暴露系统默认隐藏的低分辨率/重复模式(实验性 Sidecar 增强的公开部分)。
+    func rawModes(for displayID: UInt32, includeHidden: Bool) -> [RawModeRecord]
 }
 
 /// 显示器名称提供器:core 层不依赖 AppKit,名称由调用方注入
@@ -39,6 +44,26 @@ public final class CoreGraphicsDisplayService: DisplayService {
 
     // MARK: - CG 采集
 
+    public func rawModes(for displayID: UInt32, includeHidden: Bool) -> [RawModeRecord] {
+        // 常量值即其名称字符串;直接用字面量避免依赖是否公开导出的符号
+        let options: CFDictionary? = includeHidden
+            ? ["kCGDisplayShowDuplicateLowResolutionModes": true] as CFDictionary
+            : nil
+        guard let list = CGDisplayCopyAllDisplayModes(displayID, options) as? [CGDisplayMode] else {
+            return []
+        }
+        return list.map { mode in
+            RawModeRecord(
+                width: Int(mode.width),
+                height: Int(mode.height),
+                pixelWidth: Int(mode.pixelWidth),
+                pixelHeight: Int(mode.pixelHeight),
+                refreshRate: mode.refreshRate,
+                ioFlags: mode.ioFlags
+            )
+        }
+    }
+
     private func collectRawRecords() -> [RawDisplayRecord] {
         var ids = [CGDirectDisplayID](repeating: 0, count: 32)
         var count: UInt32 = 0
@@ -54,20 +79,8 @@ public final class CoreGraphicsDisplayService: DisplayService {
         let name = nameProvider(displayID) ?? ""
         let current = CGDisplayCopyDisplayMode(displayID)
 
-        var rawModes: [RawModeRecord] = []
-        if let modeList = CGDisplayCopyAllDisplayModes(displayID, nil) as? [CGDisplayMode] {
-            rawModes = modeList.map { mode in
-                RawModeRecord(
-                    width: Int(mode.width),
-                    height: Int(mode.height),
-                    pixelWidth: Int(mode.pixelWidth),
-                    pixelHeight: Int(mode.pixelHeight),
-                    refreshRate: mode.refreshRate,
-                    ioFlags: mode.ioFlags
-                )
-            }
-        }
-        let currentIndex = rawModes.firstIndex { mode in
+        let modes = rawModes(for: displayID, includeHidden: false)
+        let currentIndex = modes.firstIndex { mode in
             guard let current = current else { return false }
             return mode.width == Int(current.width)
                 && mode.height == Int(current.height)
@@ -87,7 +100,7 @@ public final class CoreGraphicsDisplayService: DisplayService {
             isMain: CGDisplayIsMain(displayID) != 0,
             isBuiltin: CGDisplayIsBuiltin(displayID) != 0,
             currentModeIndex: currentIndex,
-            modes: rawModes
+            modes: modes
         )
     }
 }
