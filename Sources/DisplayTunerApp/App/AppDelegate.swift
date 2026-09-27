@@ -9,6 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBar: MenuBarController!
     private var alertPresenter: SafetyAlertPresenter!
     private var screenChangeObserver: NSObjectProtocol?
+    /// 屏幕参数变化的防抖任务:切换/镜像的瞬间系统会连发多次通知,
+    /// 且瞬态枚举可能短暂"看不到"Sidecar —— 延迟处理避免误判断开与自动恢复打架。
+    private var screenChangeWork: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 日志先行:控制台 + Application Support 轮转文件
@@ -67,16 +70,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         menuBar = MenuBarController(viewModel: viewModel, router: router, logger: logger)
 
-        // 显示器热插拔 / Sidecar 连接断开 → 刷新 + 自动恢复
+        // 显示器热插拔 / Sidecar 连接断开 → 防抖后刷新 + 自动恢复
         screenChangeObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             guard let self = self else { return }
-            self.logger.info("screen parameters changed", context: "App")
-            self.viewModel.refreshDisplays()
-            self.viewModel.autoRestoreIfNeeded()
+            self.logger.info("screen parameters changed (debounced)", context: "App")
+            self.screenChangeWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self = self else { return }
+                self.viewModel.refreshDisplays()
+                self.viewModel.autoRestoreIfNeeded()
+            }
+            self.screenChangeWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
         }
 
         // 启动即枚举;自动恢复稍后一拍,让状态先就绪
@@ -96,6 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let observer = screenChangeObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        screenChangeWork?.cancel()
         logger.info("DisplayTuner terminating", context: "App")
     }
 

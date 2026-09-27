@@ -397,11 +397,14 @@ final class TunerViewModelTests: XCTestCase {
             height: 1640
         ))
 
-        // 模拟 iPad 断开:枚举只剩内置屏
+        // 模拟 iPad 断开:枚举只剩内置屏。
+        // 断开需连续两次枚举确认(第一次视为镜像重组瞬态,见 v0.2.4)
         displayService.displays = [DisplayCatalog.display(from: Fixtures.builtinDisplay())]
         viewModel.refreshDisplays()
+        XCTAssertNotNil(viewModel.virtualDisplayCoordinator.activeSession, "第一次缺失视为瞬态")
 
-        XCTAssertEqual(virtualMirror.unmirrored.count, 1, "Sidecar 消失应触发停止")
+        viewModel.refreshDisplays()
+        XCTAssertEqual(virtualMirror.unmirrored.count, 1, "连续两次缺失应触发停止")
         XCTAssertEqual(virtualFactory.destroyedIDs.count, 1)
         XCTAssertNil(viewModel.virtualDisplayCoordinator.activeSession)
     }
@@ -490,6 +493,77 @@ final class TunerViewModelTests: XCTestCase {
 
         XCTAssertTrue(controller.applyCalls.isEmpty,
                       "镜像会话中的 Sidecar 不能自动恢复模式(会和镜像约束打架)")
+    }
+
+    // MARK: - 瞬态与镜像保护(v0.2.4)
+
+    func testTransientSidecarDisappearDoesNotStopSession() {
+        let fullList = displayService.displays
+        viewModel.refreshDisplays()
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: sidecarDisplay.stableID,
+            width: 2360,
+            height: 1640
+        ))
+
+        // 第一次枚举缺失(镜像重组瞬态):不应停止会话
+        displayService.displays = fullList.filter { !$0.isSidecar }
+        viewModel.refreshDisplays()
+        XCTAssertNotNil(viewModel.virtualDisplayCoordinator.activeSession, "瞬态缺失不应停止会话")
+
+        // 第二次仍缺失:判定真正断开,停止并清理
+        viewModel.refreshDisplays()
+        XCTAssertNil(viewModel.virtualDisplayCoordinator.activeSession, "连续两次缺失应停止会话")
+        XCTAssertEqual(virtualFactory.destroyedIDs.count, 1)
+    }
+
+    func testTransientDisappearThenReappearResetsCounter() {
+        let fullList = displayService.displays
+        viewModel.refreshDisplays()
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: sidecarDisplay.stableID,
+            width: 2360,
+            height: 1640
+        ))
+
+        // 缺一次 → 回来 → 再缺一次:仍不算连续两次
+        displayService.displays = fullList.filter { !$0.isSidecar }
+        viewModel.refreshDisplays()
+        displayService.displays = fullList
+        viewModel.refreshDisplays()
+        displayService.displays = fullList.filter { !$0.isSidecar }
+        viewModel.refreshDisplays()
+        XCTAssertNotNil(viewModel.virtualDisplayCoordinator.activeSession, "非连续缺失不停止")
+
+        // 第四次(连续第二次缺失)才停
+        viewModel.refreshDisplays()
+        XCTAssertNil(viewModel.virtualDisplayCoordinator.activeSession)
+    }
+
+    func testAutoRestoreSkipsAnyMirroredDisplayEvenWithoutSessionMatch() {
+        // 场景:会话挂在 Sidecar A 上,但枚举里另一台处于镜像组的显示器 B
+        // 也不应被自动恢复(双重保护:不只依赖会话稳定 ID 匹配)
+        let mirroredOther = DisplayCatalog.display(from: Fixtures.sidecarDisplay(displayID: 33))
+        var config = configStore.config
+        config.perDisplay[mirroredOther.stableID] = PerDisplayConfig(
+            modeKey: mirroredOther.modes.first { !$0.isCurrent }?.modeKey
+        )
+        configStore.config = config
+
+        viewModel.refreshDisplays()
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: sidecarDisplay.stableID,
+            width: 2360,
+            height: 1640
+        ))
+        // 让 mirroredOther 进入镜像组(MockMirrorService 状态)
+        try? virtualMirror.mirror(display: mirroredOther.displayID, toMaster: 101)
+
+        displayService.displays.append(mirroredOther)
+        viewModel.refreshDisplays()
+        viewModel.autoRestoreIfNeeded()
+
+        XCTAssertTrue(controller.applyCalls.isEmpty, "镜像组内的显示器一律不做自动恢复")
     }
 
     func testStopVirtualDisplayViaMenu() {

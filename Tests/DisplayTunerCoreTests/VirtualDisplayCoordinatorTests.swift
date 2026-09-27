@@ -32,7 +32,12 @@ final class MockVirtualDisplayFactory: VirtualDisplayCreating {
         }
         modeTables.append(table)
         nextID += 1
-        return VirtualDisplayHandle(displayID: nextID, spec: spec, object: NSObject())
+        return VirtualDisplayHandle(
+            displayID: nextID,
+            spec: spec,
+            declaredModeTable: table,
+            object: NSObject()
+        )
     }
 
     func activateSpec(_ handle: VirtualDisplayHandle, spec: VirtualDisplaySpec) throws {

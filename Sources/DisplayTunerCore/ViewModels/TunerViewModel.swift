@@ -24,8 +24,12 @@ public final class TunerViewModel {
     private let enhancer: SidecarEnhancer?
     private let loginItems: LoginItemControlling
     private let virtualFactory: VirtualDisplayCreating
+    private let virtualMirror: DisplayMirrorControlling
     private let menuBuilder: MenuModelBuilder
     private let logger: DTLogger
+    /// 活动会话的 Sidecar 连续"枚举缺失"计数:达到 2 才判定真正断开
+    /// (切档/镜像重组的瞬间,Sidecar 可能短暂从枚举里消失,属正常瞬态)。
+    private var sidecarMissCounts: [String: Int] = [:]
 
     public init(
         displayService: DisplayService,
@@ -44,6 +48,7 @@ public final class TunerViewModel {
         self.enhancer = enhancer
         self.loginItems = loginItems
         self.virtualFactory = virtualDisplayFactory
+        self.virtualMirror = mirrorService
         self.menuBuilder = MenuModelBuilder()
         self.logger = logger
         self.coordinator = ModeChangeCoordinator(
@@ -73,10 +78,24 @@ public final class TunerViewModel {
         let virtualID = virtualDisplayCoordinator.activeVirtualDisplayID
         displays = displayService.snapshotDisplays().filter { $0.displayID != virtualID }
 
-        // Sidecar 断开(或断开后稳定 ID 消失):结束虚拟屏会话
-        if let activeSidecar = virtualDisplayCoordinator.activeSession,
-           !displays.contains(where: { $0.stableID == activeSidecar.sidecarStableID }) {
-            virtualDisplayCoordinator.stop(reason: .sidecarDisconnected)
+        // Sidecar 断开检测:连续两次枚举缺失才判定(镜像重组瞬态不算)
+        if let activeSidecar = virtualDisplayCoordinator.activeSession {
+            let stableID = activeSidecar.sidecarStableID
+            if displays.contains(where: { $0.stableID == stableID }) {
+                sidecarMissCounts[stableID] = 0
+            } else {
+                let misses = (sidecarMissCounts[stableID] ?? 0) + 1
+                sidecarMissCounts[stableID] = misses
+                if misses >= 2 {
+                    sidecarMissCounts[stableID] = nil
+                    virtualDisplayCoordinator.stop(reason: .sidecarDisconnected)
+                } else {
+                    logger.info(
+                        "sidecar \(PrivacyRedactor.shortHash(stableID)) missing from enumeration (transient? \(misses)/2)",
+                        context: "ViewModel"
+                    )
+                }
+            }
         }
 
         refreshExtraModesIfNeeded()
@@ -272,8 +291,10 @@ public final class TunerViewModel {
     public func autoRestoreIfNeeded() {
         guard configStore.config.autoRestore else { return }
         for display in displays {
-            // 镜像会话中的 Sidecar:自动恢复会与镜像约束打架,跳过
-            if virtualDisplayCoordinator.activeSession?.sidecarStableID == display.stableID {
+            // 镜像中的显示器一律跳过:自动恢复会与镜像约束打架,把模式拉回去
+            // (会话匹配 + 镜像组状态双重判断 —— 会话瞬态丢失时仍有保护)
+            if virtualDisplayCoordinator.activeSession?.sidecarStableID == display.stableID
+                || virtualMirror.isInMirrorSet(display.displayID) {
                 continue
             }
             guard let savedKey = configStore.config.perDisplay[display.stableID]?.modeKey else {

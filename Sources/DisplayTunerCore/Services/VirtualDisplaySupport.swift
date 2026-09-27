@@ -25,14 +25,23 @@ public final class VirtualDisplayHandle {
     public let displayID: UInt32
     /// 当前激活规格(切档后由工厂更新)。
     public internal(set) var activeSpec: VirtualDisplaySpec
+    /// 创建时声明的完整模式表。系统会在镜像/切换后动态改写 CG 层的模式表
+    /// (档位会消失/新增),切档时用它重新声明,保证目标档可用。
+    let declaredModeTable: [VirtualDisplaySpec]
     /// CGVirtualDisplay 实例;置 nil 即触发 ARC release → 虚拟屏拔出。
     var retainedObject: AnyObject?
 
     public var isDestroyed: Bool { retainedObject == nil }
 
-    init(displayID: UInt32, spec: VirtualDisplaySpec, object: AnyObject) {
+    init(
+        displayID: UInt32,
+        spec: VirtualDisplaySpec,
+        declaredModeTable: [VirtualDisplaySpec],
+        object: AnyObject
+    ) {
         self.displayID = displayID
         self.activeSpec = spec
+        self.declaredModeTable = declaredModeTable
         self.retainedObject = object
     }
 }
@@ -157,14 +166,20 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
 
         var displayObject: AnyObject?
         do {
-            let object = try buildDisplay(spec: spec, additionalModes: additionalModes)
+            let table = [spec] + additionalModes.filter { $0.key != spec.key }
+            let object = try buildDisplay(table: table)
             displayObject = object
             let displayID = try Self.activate(object: object, spec: spec)
             logger.info(
-                "virtual display created: \(spec.key) with \(1 + additionalModes.filter { $0.key != spec.key }.count) mode(s) (id \(displayID))",
+                "virtual display created: \(spec.key) with \(table.count) mode(s) (id \(displayID))",
                 context: "VirtualDisplay"
             )
-            return VirtualDisplayHandle(displayID: displayID, spec: spec, object: object)
+            return VirtualDisplayHandle(
+                displayID: displayID,
+                spec: spec,
+                declaredModeTable: table,
+                object: object
+            )
         } catch {
             // 失败清理:不留半成品虚拟屏
             if let object = displayObject {
@@ -193,12 +208,15 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
         return frameworkLoaded
     }
 
-    private func buildDisplay(spec: VirtualDisplaySpec, additionalModes: [VirtualDisplaySpec]) throws -> AnyObject {
+    private func buildDisplay(table: [VirtualDisplaySpec]) throws -> AnyObject {
+        guard let preferred = table.first else {
+            throw VirtualDisplayError.createFailed("empty mode table")
+        }
         let descriptor = try Self.instantiate("CGVirtualDisplayDescriptor")
         Self.send(descriptor, "setName:", VirtualDisplaySpec.displayName as NSString)
-        Self.send(descriptor, "setMaxPixelsWide:", max(spec.width * 2, 4096))
-        Self.send(descriptor, "setMaxPixelsHigh:", max(spec.height * 2, 4096))
-        let mmHeight = 300.0 * Double(spec.height) / Double(spec.width)
+        Self.send(descriptor, "setMaxPixelsWide:", max(preferred.width * 2, 4096))
+        Self.send(descriptor, "setMaxPixelsHigh:", max(preferred.height * 2, 4096))
+        let mmHeight = 300.0 * Double(preferred.height) / Double(preferred.width)
         Self.send(descriptor, "setSizeInMillimeters:", NSSize(width: 300, height: mmHeight))
         Self.send(descriptor, "setProductID:", 0x9D9D)
         Self.send(descriptor, "setSerialNum:", Int(Date().timeIntervalSince1970) % 1_000_000_000)
@@ -212,9 +230,17 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
             Self.alloc("CGVirtualDisplay"), "initWithDescriptor:", descriptor
         )
 
-        // 模式表:首选档在前,其余档一并注册 —— 系统设置/菜单切档才不会"闪一下被拉回"
-        let table = [spec] + additionalModes.filter { $0.key != spec.key }
-        let modes = try table.map { entry in
+        let settings = try Self.buildSettings(preferred: preferred, table: table)
+        guard Self.sendBool(display, "applySettings:", settings) else {
+            throw VirtualDisplayError.createFailed("applySettings returned false")
+        }
+        return display
+    }
+
+    /// 构造 CGVirtualDisplaySettings:首选档在前,表内其余档一并注册。
+    static func buildSettings(preferred: VirtualDisplaySpec, table: [VirtualDisplaySpec]) throws -> AnyObject {
+        let ordered = [preferred] + table.filter { $0.key != preferred.key }
+        let modes = try ordered.map { entry in
             try Self.sendObject(
                 Self.alloc("CGVirtualDisplayMode"),
                 "initWithWidth:height:refreshRate:",
@@ -224,41 +250,98 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
         let settings = try Self.instantiate("CGVirtualDisplaySettings")
         Self.send(settings, "setHiDPI:", false)
         Self.send(settings, "setModes:", modes as NSArray)
-
-        guard Self.sendBool(display, "applySettings:", settings) else {
-            throw VirtualDisplayError.createFailed("applySettings returned false")
-        }
-        return display
+        return settings
     }
 
-    /// 原地切档(公共 CG API):模式表在创建时已含多档,切换不会触发重建。
+    /// 原地切档。
+    ///
+    /// 两条路径(真机实验结论):系统会在镜像建立和每次切换后**动态改写**虚拟屏的
+    /// CG 模式表——这次能切的档,下次可能已被移除,直接 CG 切换会因"模式不存在"
+    /// 而失败(表现为"偶尔能切换成功,大部分失败")。
+    /// - 快路径:目标档仍在当前 CG 模式表 → 纯 CG 切换;
+    /// - 慢路径:已被移除 → 用私有对象重新 applySettings 声明模式表
+    ///   (目标档放首位),再做 CG 切换。
+    /// 激活后轮询验证(镜像组协调是异步的)。
     public func activateSpec(_ handle: VirtualDisplayHandle, spec: VirtualDisplaySpec) throws {
         guard !handle.isDestroyed else {
             throw VirtualDisplayError.createFailed("virtual display already destroyed")
         }
+
+        if !Self.cgTableContains(displayID: handle.displayID, spec: spec) {
+            guard let object = handle.retainedObject else {
+                throw VirtualDisplayError.createFailed("virtual display already destroyed")
+            }
+            let settings = try Self.buildSettings(preferred: spec, table: handle.declaredModeTable)
+            guard Self.sendBool(object, "applySettings:", settings) else {
+                throw VirtualDisplayError.createFailed("re-applySettings returned false")
+            }
+            // 模式表更新是异步的:轮询等待目标档出现(实验实测需要数百毫秒)
+            var appeared = false
+            for _ in 0..<20 {
+                if Self.cgTableContains(displayID: handle.displayID, spec: spec) {
+                    appeared = true
+                    break
+                }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            guard appeared else {
+                throw VirtualDisplayError.activationFailed(
+                    "mode \(spec.key) did not appear in CG table after re-declare"
+                )
+            }
+            logger.info(
+                "mode \(spec.key) missing from CG table — re-declared mode table",
+                context: "VirtualDisplay"
+            )
+        }
+
         try Self.activateMode(displayID: handle.displayID, spec: spec)
         handle.activeSpec = spec
         logger.info("virtual display switched to \(spec.key)", context: "VirtualDisplay")
     }
 
+    /// 目标档是否仍在系统当前提供的 CG 模式表中。
+    static func cgTableContains(displayID: UInt32, spec: VirtualDisplaySpec) -> Bool {
+        guard let modes = CGDisplayCopyAllDisplayModes(displayID, nil) as? [CGDisplayMode] else {
+            return false
+        }
+        return modes.contains {
+            Int($0.width) == spec.width && Int($0.height) == spec.height
+        }
+    }
+
     /// 用公共 CG API 激活目标模式并验证(实验验证的事实:applySettings 只定义模式表,
     /// 激活模式必须显式切换)。
     private static func activate(object: AnyObject, spec: VirtualDisplaySpec) throws -> UInt32 {
-        // 轮询等待 WindowServer 分配 displayID
+        // 轮询等待两件事:WindowServer 分配 displayID + 目标档出现在 CG 模式表。
+        // applySettings 只是"声明",发布到 CG 层是异步的(实测需数百毫秒),
+        // 表未就绪就去激活会报"mode not in list"——表现为创建/切档时好时坏。
         var displayID: UInt32 = 0
-        for _ in 0..<20 {
-            displayID = sendU32(object, "displayID")
-            if displayID != 0, CGDisplayCopyDisplayMode(displayID) != nil { break }
-            Thread.sleep(forTimeInterval: 0.05)
+        var tableReady = false
+        for _ in 0..<30 {   // 最多 3 秒
+            let candidate = sendU32(object, "displayID")
+            if candidate != 0 {
+                if displayID == 0 { displayID = candidate }
+                if cgTableContains(displayID: candidate, spec: spec) {
+                    tableReady = true
+                    break
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.1)
         }
         guard displayID != 0 else {
             throw VirtualDisplayError.createFailed("displayID not assigned")
+        }
+        guard tableReady else {
+            throw VirtualDisplayError.activationFailed(
+                "mode \(spec.key) not published to CG table within 3s after applySettings"
+            )
         }
         try activateMode(displayID: displayID, spec: spec)
         return displayID
     }
 
-    /// 公共 CG API:配置目标模式 + 应用后验证。
+    /// 公共 CG API:配置目标模式 + 轮询验证(镜像组协调是异步的,立即读可能还是旧值)。
     private static func activateMode(displayID: UInt32, spec: VirtualDisplaySpec) throws {
         guard let modes = CGDisplayCopyAllDisplayModes(displayID, nil) as? [CGDisplayMode],
               let target = modes.first(where: {
@@ -282,8 +365,17 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
             throw VirtualDisplayError.activationFailed("complete: \(complete.rawValue)")
         }
 
-        guard let actual = CGDisplayCopyDisplayMode(displayID),
-              Int(actual.width) == spec.width, Int(actual.height) == spec.height else {
+        // 轮询等待生效:最多 1 秒(通常一两轮即通过)
+        var verified = false
+        for _ in 0..<10 {
+            if let actual = CGDisplayCopyDisplayMode(displayID),
+               Int(actual.width) == spec.width, Int(actual.height) == spec.height {
+                verified = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        guard verified else {
             let actualKey = CGDisplayCopyDisplayMode(displayID)
                 .map { "\($0.width)x\($0.height)" } ?? "<none>"
             throw VirtualDisplayError.verificationFailed(expected: spec.key, actual: actualKey)

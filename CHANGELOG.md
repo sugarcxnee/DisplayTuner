@@ -5,6 +5,36 @@
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-09-27
+
+### Fixed
+
+- **修复"切档闪一下被拉回 + 弹出方向反了的确认框"**:切档/镜像重组的瞬间,
+  系统连发屏幕参数变化通知,且瞬态枚举可能短暂"看不到"Sidecar ——
+  导致会话被误判断开 → 自动恢复失去拦截,把 Sidecar 切回保存的旧模式
+  (弹窗显示"新=旧模式",保留/还原都停留在旧模式)。
+  - 屏幕参数变化通知**防抖 1.5 秒**再处理(AppDelegate);
+  - Sidecar 断开**连续两次枚举确认**才判定(镜像重组瞬态不算);
+  - 自动恢复对**镜像组内**的显示器一律跳过(会话稳定 ID 匹配 +
+    `CGDisplayIsInMirrorSet` 双重判断,会话瞬态丢失时仍有保护)。
+
+## [0.2.3] - 2026-09-27
+
+### Fixed
+
+- **修复镜像后切档"偶尔成功、大部分失败"**(v0.2.2 残留):
+  真机诊断发现系统会在镜像建立与每次切换后**动态改写**虚拟屏的 CG 模式表
+  ——这次能切的档,下次可能已被移除,直接 CG 切换报"模式不存在"。
+  - `activateSpec` 双路径:目标档仍在 CG 表 → 纯 CG 切换(快);
+    已被移除 → 用私有对象重新 `applySettings` 声明模式表(目标档放首位)
+    并轮询等待其出现在 CG 表,再 CG 切换(慢,真机验证 100% 有效)。
+  - 创建流程同样等待"目标档出现在 CG 表"(applySettings 的发布是异步的),
+    代替原先只等 displayID 分配 —— 消除创建期的时序竞态。
+  - 激活验证改为轮询(最多 1 秒),容忍镜像组的异步协调。
+  - `VirtualDisplayHandle` 保存创建时声明的模式表供重新声明使用。
+- 危险门控集成测试新增"镜像下反复切档两轮全覆盖"回归用例,
+  并在测试前清理残留镜像会话(防止基准读数被污染)。
+
 ## [0.2.2] - 2026-09-27
 
 ### Fixed
@@ -98,7 +128,9 @@
 - 只有用户确认保留的模式才写入持久化配置;
 - 不直接链接私有框架;私有 API 默认关闭;App Store 分发风险已在 README 声明。
 
-[Unreleased]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.3...v0.2.4
+[0.2.3]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.1.0...v0.2.0

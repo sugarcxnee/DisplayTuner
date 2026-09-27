@@ -184,6 +184,78 @@ extension LiveDisplayIntegrationTests {
         _ = CGGetOnlineDisplayList(32, &ids, &count)
         return Int(count)
     }
+
+    /// 危险测试(v0.2.3 回归):镜像状态下反复切档。
+    /// 系统会在镜像/切换后动态改写虚拟屏 CG 模式表,历史 bug 是"这次能切的档
+    /// 下次不在表里 → 大部分切换失败"。此测试连续切各档两轮,全部必须成功。
+    func testDangerousVirtualDisplayRepeatedSwitchUnderMirror() throws {
+        try XCTSkipUnless(dangerousAllowed,
+                          "设置 DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 且确保 Sidecar 已连接、有人在场")
+
+        let logger = DTLogger.makeDefault()
+        let service = CoreGraphicsDisplayService(logger: logger)
+        guard let sidecar = service.snapshotDisplays().first(where: \.isSidecar) else {
+            throw XCTSkip("当前无 Sidecar 连接")
+        }
+
+        let factory = CoreDisplayVirtualDisplayFactory(logger: logger)
+        let mirror = CoreGraphicsMirrorService(logger: logger)
+        let coordinator = VirtualDisplayCoordinator(
+            factory: factory,
+            mirror: mirror,
+            scheduler: ImmediateFireScheduler(),
+            logger: logger
+        )
+        let recorder = VirtualDisplayRecorder()
+        coordinator.delegate = recorder
+
+        // 清理残留镜像(例如上次异常退出遗留的会话),否则基准读数会被污染
+        if mirror.isInMirrorSet(sidecar.displayID) {
+            print("⚠️ Sidecar 已处于镜像组,先解除残留镜像")
+            try? mirror.unmirror(display: sidecar.displayID)
+            Thread.sleep(forTimeInterval: 1.5)
+        }
+        // 重新枚举拿干净的基准分辨率
+        guard let clean = service.snapshotDisplays()
+            .first(where: { $0.stableID == sidecar.stableID }) else {
+            throw XCTSkip("重新枚举失败")
+        }
+        let presets = VirtualDisplayPresets.presets(for: clean)
+        guard presets.count >= 2 else { throw XCTSkip("无可用档位") }
+        let allSpecs = presets.map(\.spec)
+        let start = presets.first(where: \.isRecommended)!.spec
+
+        coordinator.start(spec: start, additionalModes: allSpecs, mirroring: sidecar)
+        guard coordinator.activeSession != nil else {
+            XCTFail("start 失败: \(String(describing: recorder.outcomes.last))")
+            return
+        }
+        coordinator.confirmActive()
+        XCTAssertTrue(mirror.isInMirrorSet(sidecar.displayID))
+
+        // 两轮 × 全部档位(含起点档),覆盖"表漂移后目标档消失"的场景
+        for _ in 0..<2 {
+            for spec in allSpecs {
+                coordinator.changeResolution(to: spec)
+                guard case .resolutionChanged(let applied, _) = recorder.outcomes.last ?? .failed(sidecarStableID: "", error: "") else {
+                    XCTFail("切档到 \(spec.key) 失败,最后结果:\(String(describing: recorder.outcomes.last))")
+                    continue
+                }
+                XCTAssertEqual(applied.key, spec.key)
+                XCTAssertEqual(coordinator.activeSession?.spec.key, spec.key)
+
+                if let vid = coordinator.activeVirtualDisplayID,
+                   let mode = CGDisplayCopyDisplayMode(vid) {
+                    XCTAssertEqual(Int(mode.width), spec.width, "实际生效模式应为 \(spec.key)")
+                    XCTAssertEqual(Int(mode.height), spec.height)
+                    print("📺 虚拟屏实际模式: \(mode.width)x\(mode.height) ✅")
+                }
+            }
+        }
+
+        coordinator.stop(reason: .userRequested)
+        XCTAssertNil(coordinator.activeSession)
+    }
 }
 
 final class VirtualDisplayRecorder: VirtualDisplayCoordinatorDelegate {
