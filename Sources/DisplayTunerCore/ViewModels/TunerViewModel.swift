@@ -1,0 +1,258 @@
+import Foundation
+
+/// 主 ViewModel:串联枚举、切换、配置、日志、登录项,产出菜单模型。
+/// AppKit 层只做"模型 → NSMenu"翻译和动作转发,本类不 import AppKit。
+/// 预期在主线程使用。
+public final class TunerViewModel {
+
+    public private(set) var displays: [DisplayInfo] = []
+    public private(set) var menuModel = MenuModel(entries: [])
+    /// 每显示器实验增强揭示的额外模式(稳定 ID 索引)。
+    public private(set) var extraModes: [String: [DisplayModeInfo]] = [:]
+    public private(set) var lastOutcome: ModeChangeOutcome?
+
+    public let coordinator: ModeChangeCoordinator
+
+    private let displayService: DisplayService
+    private let configStore: ConfigStore
+    private let enhancer: SidecarEnhancer?
+    private let loginItems: LoginItemControlling
+    private let menuBuilder: MenuModelBuilder
+    private let logger: DTLogger
+
+    public init(
+        displayService: DisplayService,
+        modeController: DisplayModeController,
+        configStore: ConfigStore,
+        loginItems: LoginItemControlling,
+        enhancer: SidecarEnhancer? = nil,
+        countdownScheduler: CountdownScheduler = DispatchCountdownScheduler(),
+        logger: DTLogger = DTLogger()
+    ) {
+        self.displayService = displayService
+        self.configStore = configStore
+        self.enhancer = enhancer
+        self.loginItems = loginItems
+        self.menuBuilder = MenuModelBuilder()
+        self.logger = logger
+        self.coordinator = ModeChangeCoordinator(
+            controller: modeController,
+            scheduler: countdownScheduler,
+            logger: logger
+        )
+        self.coordinator.delegate = self
+    }
+
+    public var config: DisplayTunerConfig { configStore.config }
+
+    // MARK: - 刷新与菜单
+
+    /// 菜单即将打开时调用:重新枚举 + 重建菜单(规格 2:避免状态过期)。
+    @discardableResult
+    public func refreshDisplays() -> MenuModel {
+        displays = displayService.snapshotDisplays()
+        refreshExtraModesIfNeeded()
+        rebuildMenu()
+        return menuModel
+    }
+
+    public func rebuildMenu() {
+        let probe = config.experimentalSidecar
+            ? (enhancer?.lastProbeReport ?? enhancer?.probePrivateStatus())
+            : nil
+        menuModel = menuBuilder.build(
+            displays: displays,
+            config: configStore.config,
+            loginItemEnabled: loginItems.isEnabled,
+            privateProbe: probe,
+            extraModes: extraModes
+        )
+    }
+
+    /// 实验增强开启时,为 Sidecar 显示器揭示隐藏模式。
+    private func refreshExtraModesIfNeeded() {
+        guard let enhancer = enhancer else { return }
+        guard configStore.config.experimentalSidecar else {
+            if !extraModes.isEmpty { extraModes = [:] }
+            return
+        }
+        var collected: [String: [DisplayModeInfo]] = [:]
+        for display in displays where display.isSidecar {
+            collected[display.stableID] = enhancer.extraModes(for: display)
+        }
+        extraModes = collected
+    }
+
+    // MARK: - 动作分发
+
+    public func perform(_ action: MenuAction) {
+        switch action {
+        case .refresh:
+            refreshDisplays()
+
+        case .selectMode(let stableID, let modeKey):
+            selectMode(modeKey, on: stableID)
+
+        case .toggleFilter(let stableID, let filter):
+            toggleFilter(filter, on: stableID)
+
+        case .restoreDefaultMode(let stableID):
+            restoreDefaultMode(on: stableID)
+
+        case .toggleExperimentalSidecar:
+            toggleExperimentalSidecar()
+
+        case .toggleAutoRestore:
+            var config = configStore.config
+            config.autoRestore.toggle()
+            configStore.save(config)
+            logger.info("autoRestore = \(config.autoRestore)", context: "ViewModel")
+            rebuildMenu()
+
+        case .toggleLaunchAtLogin:
+            let target = !loginItems.isEnabled
+            if loginItems.setEnabled(target) {
+                logger.info("launch at login = \(target)", context: "ViewModel")
+            } else {
+                logger.error("failed to set launch at login = \(target)", context: "ViewModel")
+            }
+            rebuildMenu()
+
+        case .setLogLevel(let level):
+            var config = configStore.config
+            config.logLevel = level
+            configStore.save(config)
+            logger.setLevel(level)
+            logger.info("log level = \(level.label)", context: "ViewModel")
+            rebuildMenu()
+
+        case .openLogFile, .showAbout, .quit:
+            // 这三个动作由 App 壳处理(打开文件/关于面板/终止应用)
+            break
+        }
+    }
+
+    // MARK: - 模式选择
+
+    public func selectMode(_ modeKey: String, on stableID: String) {
+        guard let display = displays.first(where: { $0.stableID == stableID }) else {
+            logger.error("display \(PrivacyRedactor.shortHash(stableID)) vanished before applying", context: "ViewModel")
+            return
+        }
+        // 优先常规列表,其次实验增强列表
+        let candidates = display.modes + (extraModes[stableID] ?? [])
+        guard let mode = candidates.first(where: { $0.modeKey == modeKey }) else {
+            logger.error("mode \(modeKey) not found on \(display.logDescriptor)", context: "ViewModel")
+            return
+        }
+        coordinator.request(mode: mode, on: display)
+    }
+
+    private func toggleFilter(_ filter: ModeFilter, on stableID: String) {
+        var config = configStore.config
+        var perDisplay = config.perDisplay[stableID] ?? PerDisplayConfig()
+        if perDisplay.filters.contains(filter) {
+            perDisplay.filters.remove(filter)
+        } else {
+            perDisplay.filters.insert(filter)
+        }
+        config.perDisplay[stableID] = perDisplay
+        configStore.save(config)
+        rebuildMenu()
+    }
+
+    private func restoreDefaultMode(on stableID: String) {
+        guard let display = displays.first(where: { $0.stableID == stableID }) else { return }
+        // 默认模式 = 系统标记 kDisplayModeDefaultFlag 的模式;找不到则回退排序第一的安全模式
+        let target = display.modes.first {
+            $0.ioFlags & DisplayModeIOFlags.defaultFlag != 0
+        } ?? display.modes.filter(\.isSafe).first
+
+        guard let target = target else {
+            logger.error("no restorable default mode on \(display.logDescriptor)", context: "ViewModel")
+            return
+        }
+        if target.modeKey == display.currentMode?.modeKey {
+            logger.info("already at default mode", context: "ViewModel")
+            return
+        }
+        coordinator.request(mode: target, on: display)
+    }
+
+    private func toggleExperimentalSidecar() {
+        var config = configStore.config
+        config.experimentalSidecar.toggle()
+        configStore.save(config)
+        logger.info("experimental sidecar enhancement = \(config.experimentalSidecar)", context: "ViewModel")
+        if config.experimentalSidecar {
+            _ = enhancer?.probePrivateStatus()
+        } else {
+            extraModes = [:]
+        }
+        refreshExtraModesIfNeeded()
+        rebuildMenu()
+    }
+
+    // MARK: - 自动恢复
+
+    /// 启动与显示器变化时调用:按稳定 ID 恢复已保存且与当前不同的模式。
+    /// 走与手动选择完全相同的安全倒计时路径。
+    public func autoRestoreIfNeeded() {
+        guard configStore.config.autoRestore else { return }
+        for display in displays {
+            guard let savedKey = configStore.config.perDisplay[display.stableID]?.modeKey else {
+                continue
+            }
+            guard let current = display.currentMode, current.modeKey != savedKey else {
+                continue
+            }
+            let candidates = display.modes + (extraModes[display.stableID] ?? [])
+            guard let target = candidates.first(where: { $0.modeKey == savedKey }) else {
+                logger.info(
+                    "saved mode \(savedKey) no longer available on \(display.logDescriptor), skipping",
+                    context: "ViewModel"
+                )
+                continue
+            }
+            logger.info(
+                "auto-restoring \(savedKey) on \(display.logDescriptor)",
+                context: "ViewModel"
+            )
+            coordinator.request(mode: target, on: display)
+            return   // 一次只恢复一台,确认后再处理下一台
+        }
+    }
+
+    // MARK: - 导入导出(菜单与命令行共用)
+
+    public func exportConfig(to url: URL) throws {
+        try configStore.exportConfig(to: url)
+    }
+
+    public func importConfig(from url: URL) throws {
+        try configStore.importConfig(from: url)
+        logger.setLevel(configStore.config.logLevel)
+        refreshDisplays()
+    }
+}
+
+// MARK: - ModeChangeCoordinatorDelegate
+
+extension TunerViewModel: ModeChangeCoordinatorDelegate {
+
+    public func coordinator(_ coordinator: ModeChangeCoordinator, didProduce outcome: ModeChangeOutcome) {
+        lastOutcome = outcome
+        switch outcome {
+        case .confirmed(let stableID, let modeKey):
+            // 只有用户确认保留的模式才写入持久化配置
+            var config = configStore.config
+            var perDisplay = config.perDisplay[stableID] ?? PerDisplayConfig()
+            perDisplay.modeKey = modeKey
+            config.perDisplay[stableID] = perDisplay
+            configStore.save(config)
+        case .applied, .reverted, .failed:
+            break
+        }
+        refreshDisplays()
+    }
+}

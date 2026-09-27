@@ -107,3 +107,67 @@ final class OutcomeRecorder: ModeChangeCoordinatorDelegate {
         outcomes.append(outcome)
     }
 }
+
+/// 可编程枚举服务 Mock。
+final class MockDisplayService: DisplayService {
+    var displays: [DisplayInfo] = []
+    private(set) var snapshotCallCount = 0
+
+    func snapshotDisplays() -> [DisplayInfo] {
+        snapshotCallCount += 1
+        return displays
+    }
+
+    func rawModes(for displayID: UInt32, includeHidden: Bool) -> [RawModeRecord] {
+        []
+    }
+}
+
+/// 内存配置存储 Mock。`config` 可直接赋值用于预置场景。
+final class MockConfigStore: ConfigStore {
+    var config: DisplayTunerConfig
+    private(set) var saveCallCount = 0
+    private(set) var exportCallCount = 0
+    private(set) var importCallCount = 0
+    var importError: Error?
+
+    init(config: DisplayTunerConfig = DisplayTunerConfig()) {
+        self.config = config
+    }
+
+    func save(_ config: DisplayTunerConfig) {
+        self.config = config
+        saveCallCount += 1
+    }
+
+    @discardableResult
+    func reload() -> DisplayTunerConfig {
+        config
+    }
+
+    func exportConfig(to url: URL) throws {
+        exportCallCount += 1
+    }
+
+    @discardableResult
+    func importConfig(from url: URL) throws -> DisplayTunerConfig {
+        importCallCount += 1
+        if let importError = importError { throw importError }
+        return config
+    }
+}
+
+/// 登录项 Mock。
+final class MockLoginItem: LoginItemControlling {
+    var isEnabled: Bool = false
+    var nextResult = true
+    private(set) var setCalls: [Bool] = []
+
+    @discardableResult
+    func setEnabled(_ enabled: Bool) -> Bool {
+        setCalls.append(enabled)
+        guard nextResult else { return false }
+        isEnabled = enabled
+        return true
+    }
+}
