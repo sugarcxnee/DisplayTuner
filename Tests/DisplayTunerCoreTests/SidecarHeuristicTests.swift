@@ -81,4 +81,48 @@ final class SidecarHeuristicTests: XCTestCase {
         )
         XCTAssertFalse(SidecarHeuristic.isLikelySidecar(record))
     }
+
+    // MARK: - EDID ASCII 身份信号(实测:随航屏 vendor="aapl"、model="iPad")
+
+    func testASCIIIdentifiersDetectedEvenWithoutName() {
+        // 真机形态:vendor=0x6161706c("aapl")、model=0x69506164("iPad")、无名称、1x 模式
+        let record = RawDisplayRecord(
+            displayID: 5,
+            vendorNumber: 0x6161706c,
+            modelNumber: 0x69506164,
+            serialNumber: 0,
+            name: "",
+            bounds: .zero,
+            currentModeIndex: 0,
+            modes: [
+                Fixtures.mode(1180, 820, hidpi: false),
+                Fixtures.mode(640, 480, hidpi: false),
+            ]
+        )
+        XCTAssertTrue(SidecarHeuristic.isLikelySidecar(record),
+                      "EDID ASCII 身份必须在名称缺失时仍能识别")
+    }
+
+    func testNormalAppleVendorNumberIsNotASCIISignal() {
+        // 常规苹果 vendor 0x05AC 含不可打印字节,不产生 ASCII 信号
+        XCTAssertEqual(SidecarHeuristic.asciiIdentifier(0x05AC), "")
+        let record = RawDisplayRecord(
+            displayID: 7,
+            vendorNumber: 0x05AC,
+            modelNumber: 0xA063,
+            serialNumber: 0,
+            name: "Studio Display",
+            bounds: .zero,
+            currentModeIndex: 0,
+            modes: [Fixtures.mode(1920, 1080)]
+        )
+        XCTAssertFalse(SidecarHeuristic.isLikelySidecar(record))
+    }
+
+    func testASCIIIdentifierParsing() {
+        XCTAssertEqual(SidecarHeuristic.asciiIdentifier(0x6161706c), "aapl")
+        XCTAssertEqual(SidecarHeuristic.asciiIdentifier(0x69506164), "iPad")
+        XCTAssertEqual(SidecarHeuristic.asciiIdentifier(0), "")
+        XCTAssertEqual(SidecarHeuristic.asciiIdentifier(0x6161_7F6c), "", "DEL 字节不可打印 → 非标识")
+    }
 }

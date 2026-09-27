@@ -36,6 +36,13 @@ public enum SidecarHeuristic {
             score += 3
         }
 
+        // 强信号:EDID 的 vendor/model 以 ASCII 编码身份
+        // (实测随航屏 vendor=0x6161706c="aapl"、model=0x69506164="iPad")
+        if asciiIdentifier(vendor).lowercased().contains("appl")
+            || asciiIdentifier(model).lowercased().contains("ipad") {
+            score += 3
+        }
+
         // 中信号:无 EDID 的虚拟显示器
         if vendor == 0 && model == 0 && serial == 0 {
             score += 2
@@ -52,6 +59,19 @@ public enum SidecarHeuristic {
         }
 
         return score
+    }
+
+    /// 把 EDID 数值按大端字节解释为可打印 ASCII(不可打印字节丢弃)。
+    static func asciiIdentifier(_ value: UInt32) -> String {
+        let bytes: [UInt8] = [
+            UInt8((value >> 24) & 0xFF),
+            UInt8((value >> 16) & 0xFF),
+            UInt8((value >> 8) & 0xFF),
+            UInt8(value & 0xFF),
+        ]
+        let printable = bytes.filter { $0 >= 0x20 && $0 <= 0x7E }
+        guard printable.count == bytes.count else { return "" }   // 有不可打印字节就不当 ASCII 标识
+        return String(bytes: bytes, encoding: .ascii) ?? ""
     }
 
     /// 是否判定为 Sidecar。
