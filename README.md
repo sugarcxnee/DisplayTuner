@@ -17,6 +17,8 @@ macOS 纯菜单栏副屏分辨率调整工具。类似 Display Maestro,但更轻
 │   ├── 过滤:仅 HiDPI / ≥ 当前分辨率 / 16:10(可叠加)
 │   ├── 恢复默认模式
 │   └── 高级 ▸ 实验性 Sidecar 增强
+│            ▸ 虚拟屏(实验):×1.5 / ×2(推荐) / ×2.5 三档更大工作区,
+│               运行中可一键停止;10 秒倒计时自动还原
 ├── ─────────────────────
 ├── ✓ 自动恢复上次配置
 ├── 实验性 Sidecar 增强(附私有符号探测状态)
@@ -80,7 +82,8 @@ DisplayTuner.app/Contents/MacOS/DisplayTuner --import-config ~/backup.json
 ## 限制说明(请务必阅读)
 
 - **Sidecar 更高分辨率不是无中生有**:可用模式由 iPad 型号、macOS 版本、连接方式(有线/无线)共同决定。系统不暴露更高模式时,菜单会如实显示"当前随航连接未提供更高分辨率模式",DisplayTuner 不会伪造不存在的模式。
-- **实验性 Sidecar 增强**默认关闭。其公开部分用 `kCGDisplayShowDuplicateLowResolutionModes` 揭示系统隐藏模式;私有部分仅以 dlopen/dlsym 探测 DisplayServices 框架符号,**探测不到就如实报告并降级到公共 API,当前版本不调用任何写入型私有函数**。
+- **实验性 Sidecar 增强**默认关闭。其公开部分用 `kCGDisplayShowDuplicateLowResolutionModes` 揭示系统隐藏模式;私有部分仅以 dlopen/dlsym 探测 DisplayServices 框架符号,**探测不到就如实报告并降级到公共 API**。
+- **虚拟屏(实验)**:系统给随航屏的模式表上限就是它原生逻辑分辨率(如 1180×820)时,想获得更大工作区,唯一的路子是 BetterDisplay 式方案——创建一个高分辨率虚拟屏,把 Sidecar 镜像到它上面。DisplayTuner 用 CoreDisplay 私有框架的 `CGVirtualDisplay` 类(纯运行时调用,不链接私有框架)实现,激活模式走公共 CG API。效果:工作区按所选倍数扩大,iPad 显示镜像(界面元素变小、文字渲染密度降低,属正常取舍)。同样有 10 秒倒计时自动还原;Sidecar 断开自动停止并清理。
 - **App Store**:应用包含私有框架的运行时探测(不直接链接),App Store 审核可能不接受;本工具按自用/开源分发设计。
 - **开机启动**使用 `SMAppService`,要求 App 位于稳定位置且签名有效;开发期 ad-hoc 签名注册可能失败,菜单会如实反映状态。
 - 回退 ID(无序列号的显示器)在重新插拔后可能变化,自动恢复按"稳定 ID + 模式仍可用"双条件匹配,不会盲切。

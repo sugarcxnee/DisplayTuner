@@ -44,7 +44,7 @@ CI(`.github/workflows/ci.yml`)在 macOS runner 上依次执行
 |---|---|
 | (未设置) | 集成测试全部 XCTSkip |
 | `DISPLAYTUNER_RUN_LIVE_TESTS=1` | 真实 macOS **只读**枚举,打印每台显示器与模式 |
-| `DISPLAYTUNER_RUN_DANGEROUS_TESTS=1` | **真实切换**非主屏模式并验证倒计时回滚闭环(需有人在场、副屏可短暂黑屏) |
+| `DISPLAYTUNER_RUN_DANGEROUS_TESTS=1` | **真实切换**非主屏模式并验证倒计时回滚闭环;**真实创建虚拟屏 + 镜像 Sidecar + 停止**闭环(需有人在场、Sidecar 已连接) |
 
 ```bash
 # 只读枚举(安全)
@@ -52,6 +52,9 @@ DISPLAYTUNER_RUN_LIVE_TESTS=1 swift test --filter LiveDisplayIntegrationTests
 
 # 危险切换(仅连接了可承受黑屏的副屏时!)
 DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 swift test --filter testDangerousApplyAndRollbackOnSecondaryDisplay
+
+# 虚拟屏闭环(Sidecar 已连接时)
+DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 swift test --filter testDangerousVirtualDisplayRoundtripOnSidecar
 ```
 
 ## 手动验收清单
@@ -73,21 +76,27 @@ DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 swift test --filter testDangerousApplyAndRoll
    - [ ] 不操作等 10 秒 → 自动还原,确认框收起;
    - [ ] 点"还原" → 立即还原;
    - [ ] 对主屏操作时确认框有 ⚠️ 额外警告;
-5. Sidecar 场景(连 iPad):
+5. 虚拟屏(连 iPad):
+   - [ ] Sidecar 的"高级 ▸ 虚拟屏(实验)"出现三档预设(基于当前分辨率 ×1.5/×2/×2.5);
+   - [ ] 选一档 → 弹确认框 → 保留后 iPad 显示镜像、工作区变大,菜单显示"运行中";
+   - [ ] 不确认等 10 秒 → 自动停止恢复;
+   - [ ] "停止虚拟屏"或拔掉 iPad → 虚拟屏销毁,菜单不残留;
+   - [ ] 虚拟屏自身不出现在显示器列表里。
+6. Sidecar 场景(连 iPad):
    - [ ] Sidecar 显示器带徽标,HiDPI 模式排在前面;
    - [ ] 若系统未暴露更高模式,显示"当前随航连接未提供更高分辨率模式";
    - [ ] 打开"实验性 Sidecar 增强" → 菜单显示探测状态(如"未找到私有符号"),
         若揭示出隐藏模式则出现"增强模式(实验)"分组;
-6. 全局项:
+7. 全局项:
    - [ ] 自动恢复上次配置开关持久化;
    - [ ] 日志级别切换后,"打开日志文件"能定位到
          `~/Library/Application Support/DisplayTuner/logs/DisplayTuner.log`,
          日志内容无序列号/设备名;
    - [ ] 开机启动:App 在 /Applications 且签名有效时可注册成功(开发期可能失败,如实反映);
-7. 命令行:
+8. 命令行:
    - [ ] `DisplayTuner --export-config /tmp/a.json` 退出码 0,文件为 JSON;
    - [ ] `DisplayTuner --import-config /tmp/a.json` 退出码 0,配置生效;
-8. 拔掉副屏再重连:
+9. 拔掉副屏再重连:
    - [ ] 菜单自动刷新,无崩溃,自动恢复按稳定 ID 生效(模式仍可用时)。
 
 ## 已知测试限制

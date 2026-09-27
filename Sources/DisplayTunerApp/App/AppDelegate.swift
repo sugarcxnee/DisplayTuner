@@ -40,14 +40,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             logger: logger
         )
 
-        // 模式变更结果 → 安全确认框(applied 时弹出,reverted/failed 时收起)
+        // 模式变更/虚拟屏会话结果 → 安全确认框(applied/started 时弹出,结束/失败时收起)
         alertPresenter = SafetyAlertPresenter(
             coordinator: viewModel.coordinator,
+            virtualCoordinator: viewModel.virtualDisplayCoordinator,
             displaysProvider: { [weak viewModel] in viewModel?.displays ?? [] },
             logger: logger
         )
         viewModel.onOutcome = { [weak self] outcome in
             self?.alertPresenter.handle(outcome)
+        }
+        viewModel.onVirtualOutcome = { [weak self] outcome in
+            self?.alertPresenter.handleVirtual(outcome)
         }
 
         // 菜单栏(唯一的"界面")

@@ -88,10 +88,10 @@ menuNeedsUpdate
 按稳定 ID 查配置 → 保存的模式仍可用且 ≠ 当前 → 走与手动选择**完全相同**的
 带倒计时安全路径,一次只恢复一台。
 
-### 4. 实验性 Sidecar 增强
+### 4. 实验性 Sidecar 增强 / 虚拟屏
 
 ```
-开关(默认关)
+增强开关(默认关)
   → 开启即 probePrivateStatus()
       PrivateDisplayServices: dlopen(DisplayServices.framework) + dlsym 候选符号
       找到 → 报告符号名;找不到 → "未找到私有符号" + 降级日志
@@ -100,11 +100,28 @@ menuNeedsUpdate
       公开增强:rawModes(includeHidden: true)
         = CGDisplayCopyAllDisplayModes(id, [kCGDisplayShowDuplicateLowResolutionModes: true])
       与已知列表 diff → 新模式进"增强模式(实验)"分组
+
+虚拟屏(高级 ▸ 虚拟屏(实验),仅 Sidecar 显示)
+  VirtualDisplayCoordinator(状态机,与模式切换同一安全模式):
+    start: factory.create(私有运行时桥 + 公共 API 激活模式)
+           → CGConfigureDisplayMirrorOfDisplay(sidecar → virtual)
+           → 验证 CGDisplayIsInMirrorSet → 10 秒倒计时
+    confirm / timeout / 手动停止 / Sidecar 断开
+           → 解除镜像(kCGNullDirectDisplay)→ 销毁虚拟屏(ARC release)
+  Sidecar 断开由 refreshDisplays 检测稳定 ID 消失触发停止;
+  枚举时虚拟屏自身被过滤,不会出现在菜单里。
 ```
 
 ## 私有 API 隔离(规格 3.4 的硬性要求)
 
-- 私有框架访问**全部**收敛在 `PrivateDisplayServices` 一个类;
+- DisplayServices 探测收敛在 `PrivateDisplayServices`;
+- 虚拟屏创建收敛在 `CoreDisplayVirtualDisplayFactory`(VirtualDisplaySupport.swift):
+  dlopen CoreDisplay 使 `CGVirtualDisplay/Descriptor/Mode/Settings` 类注册,
+  经 dlsym(libobjc) 的 `objc_msgSend` 动态派发,不链接私有框架;
+  **激活虚拟屏的目标模式用公共 CG API**(实验事实:applySettings 只定义模式表,
+  激活必须显式 CGConfigureDisplayWithDisplayMode);
+  镜像/解除镜像用公共 `CGConfigureDisplayMirrorOfDisplay`;
+- 两条独立的私有访问路径;
 - 只用 `dlopen`/`dlsym`(`DylibSymbolLookup`),**不直接链接**任何私有框架,
   构建产物无私有框架的链接依赖;
 - `SymbolLookup` 是协议,测试注入 Stub 验证"库缺失/符号缺失"的降级路径;

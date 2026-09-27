@@ -8,6 +8,9 @@ final class TunerViewModelTests: XCTestCase {
     private var configStore: MockConfigStore!
     private var loginItems: MockLoginItem!
     private var scheduler: MockCountdownScheduler!
+    private var virtualFactory: MockVirtualDisplayFactory!
+    private var virtualMirror: MockMirrorService!
+    private var virtualScheduler: MockCountdownScheduler!
     private var viewModel: TunerViewModel!
 
     override func setUp() {
@@ -17,6 +20,9 @@ final class TunerViewModelTests: XCTestCase {
         configStore = MockConfigStore()
         loginItems = MockLoginItem()
         scheduler = MockCountdownScheduler()
+        virtualFactory = MockVirtualDisplayFactory()
+        virtualMirror = MockMirrorService()
+        virtualScheduler = MockCountdownScheduler()
 
         let builtin = DisplayCatalog.display(from: Fixtures.builtinDisplay())
         let sidecar = DisplayCatalog.display(from: Fixtures.sidecarDisplay(modes: [
@@ -38,7 +44,10 @@ final class TunerViewModelTests: XCTestCase {
             configStore: configStore,
             loginItems: loginItems,
             enhancer: enhancer,
+            virtualDisplayFactory: virtualFactory,
+            mirrorService: virtualMirror,
             countdownScheduler: scheduler,
+            virtualCountdownScheduler: virtualScheduler,
             logger: DTLogger(sinks: [MemoryLogSink()])
         )
     }
@@ -289,5 +298,124 @@ final class TunerViewModelTests: XCTestCase {
 
         XCTAssertEqual(controller.applyCalls.count, 1)
         XCTAssertTrue(controller.applyCalls[0].hasPrefix("1280x720@60"))
+    }
+
+    // MARK: - 虚拟屏
+
+    func testStartVirtualDisplayCreatesAndMirrors() {
+        viewModel.refreshDisplays()
+
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: sidecarDisplay.stableID,
+            width: 2360,
+            height: 1640
+        ))
+
+        XCTAssertEqual(virtualFactory.createdSpecs.map(\.key), ["2360x1640"])
+        XCTAssertEqual(virtualMirror.mirrored.map(\.display), [sidecarDisplay.displayID])
+        XCTAssertTrue(viewModel.virtualDisplayCoordinator.hasPendingConfirmation)
+    }
+
+    func testStartVirtualDisplayRejectsNonSidecarTarget() {
+        viewModel.refreshDisplays()
+        let builtin = viewModel.displays.first { !$0.isSidecar }!
+
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: builtin.stableID,
+            width: 2360,
+            height: 1640
+        ))
+
+        XCTAssertTrue(virtualFactory.createdSpecs.isEmpty, "非 Sidecar 目标不允许开虚拟屏")
+    }
+
+    func testVirtualDisplayConfirmSavesPreference() {
+        viewModel.refreshDisplays()
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: sidecarDisplay.stableID,
+            width: 2360,
+            height: 1640
+        ))
+        viewModel.virtualDisplayCoordinator.confirmActive()
+
+        XCTAssertEqual(configStore.config.perDisplay[sidecarDisplay.stableID]?.virtualDisplayWidth, 2360)
+        XCTAssertEqual(configStore.config.perDisplay[sidecarDisplay.stableID]?.virtualDisplayHeight, 1640)
+    }
+
+    func testVirtualDisplayTimeoutTearsDown() {
+        viewModel.refreshDisplays()
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: sidecarDisplay.stableID,
+            width: 2360,
+            height: 1640
+        ))
+        virtualScheduler.fireLast()
+
+        XCTAssertEqual(virtualMirror.unmirrored, [sidecarDisplay.displayID])
+        XCTAssertEqual(virtualFactory.destroyedIDs.count, 1)
+        XCTAssertNil(configStore.config.perDisplay[sidecarDisplay.stableID]?.virtualDisplayWidth,
+                     "超时回滚不写偏好")
+    }
+
+    func testRefreshFiltersOutOwnVirtualDisplay() {
+        viewModel.refreshDisplays()
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: sidecarDisplay.stableID,
+            width: 2360,
+            height: 1640
+        ))
+        let virtualID: UInt32 = 101   // MockVirtualDisplayFactory 首个句柄的 displayID
+
+        // 模拟枚举服务把虚拟屏也报出来了
+        let virtualDisplayInfo = DisplayInfo(
+            stableID: "display-virtual-fake",
+            displayID: virtualID,
+            name: "DisplayTuner Virtual",
+            category: .external,
+            isMain: false,
+            isBuiltin: false,
+            bounds: .zero,
+            rotation: 0,
+            modes: [],
+            currentMode: nil
+        )
+        displayService.displays.append(virtualDisplayInfo)
+
+        viewModel.refreshDisplays()
+
+        XCTAssertFalse(
+            viewModel.displays.contains { $0.displayID == virtualID },
+            "自己创建的虚拟屏不应出现在菜单里"
+        )
+    }
+
+    func testSidecarDisconnectedStopsVirtualDisplay() {
+        viewModel.refreshDisplays()
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: sidecarDisplay.stableID,
+            width: 2360,
+            height: 1640
+        ))
+
+        // 模拟 iPad 断开:枚举只剩内置屏
+        displayService.displays = [DisplayCatalog.display(from: Fixtures.builtinDisplay())]
+        viewModel.refreshDisplays()
+
+        XCTAssertEqual(virtualMirror.unmirrored.count, 1, "Sidecar 消失应触发停止")
+        XCTAssertEqual(virtualFactory.destroyedIDs.count, 1)
+        XCTAssertNil(viewModel.virtualDisplayCoordinator.activeSession)
+    }
+
+    func testStopVirtualDisplayViaMenu() {
+        viewModel.refreshDisplays()
+        viewModel.perform(.startVirtualDisplay(
+            displayStableID: sidecarDisplay.stableID,
+            width: 2360,
+            height: 1640
+        ))
+        viewModel.perform(.stopVirtualDisplay(displayStableID: sidecarDisplay.stableID))
+
+        XCTAssertEqual(virtualMirror.unmirrored.count, 1)
+        XCTAssertEqual(virtualFactory.destroyedIDs.count, 1)
     }
 }

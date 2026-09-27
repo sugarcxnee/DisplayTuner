@@ -12,14 +12,18 @@ public final class TunerViewModel {
     public private(set) var lastOutcome: ModeChangeOutcome?
 
     public let coordinator: ModeChangeCoordinator
+    public let virtualDisplayCoordinator: VirtualDisplayCoordinator
 
     /// 模式变更结果的外部观察点:App 壳用它驱动安全确认框(NSAlert)。
     public var onOutcome: ((ModeChangeOutcome) -> Void)?
+    /// 虚拟屏会话结果的外部观察点:App 壳用它驱动安全确认框。
+    public var onVirtualOutcome: ((VirtualDisplayOutcome) -> Void)?
 
     private let displayService: DisplayService
     private let configStore: ConfigStore
     private let enhancer: SidecarEnhancer?
     private let loginItems: LoginItemControlling
+    private let virtualFactory: VirtualDisplayCreating
     private let menuBuilder: MenuModelBuilder
     private let logger: DTLogger
 
@@ -29,13 +33,17 @@ public final class TunerViewModel {
         configStore: ConfigStore,
         loginItems: LoginItemControlling,
         enhancer: SidecarEnhancer? = nil,
+        virtualDisplayFactory: VirtualDisplayCreating = CoreDisplayVirtualDisplayFactory(),
+        mirrorService: DisplayMirrorControlling = CoreGraphicsMirrorService(),
         countdownScheduler: CountdownScheduler = DispatchCountdownScheduler(),
+        virtualCountdownScheduler: CountdownScheduler = DispatchCountdownScheduler(),
         logger: DTLogger = DTLogger()
     ) {
         self.displayService = displayService
         self.configStore = configStore
         self.enhancer = enhancer
         self.loginItems = loginItems
+        self.virtualFactory = virtualDisplayFactory
         self.menuBuilder = MenuModelBuilder()
         self.logger = logger
         self.coordinator = ModeChangeCoordinator(
@@ -43,7 +51,15 @@ public final class TunerViewModel {
             scheduler: countdownScheduler,
             logger: logger
         )
+        self.virtualDisplayCoordinator = VirtualDisplayCoordinator(
+            factory: virtualDisplayFactory,
+            mirror: mirrorService,
+            scheduler: virtualCountdownScheduler,
+            logger: logger
+        )
+        // 所有存储属性就绪后再挂 delegate(delegate 回调可能触发布局)
         self.coordinator.delegate = self
+        self.virtualDisplayCoordinator.delegate = self
     }
 
     public var config: DisplayTunerConfig { configStore.config }
@@ -53,7 +69,16 @@ public final class TunerViewModel {
     /// 菜单即将打开时调用:重新枚举 + 重建菜单(规格 2:避免状态过期)。
     @discardableResult
     public func refreshDisplays() -> MenuModel {
-        displays = displayService.snapshotDisplays()
+        // 我们自己创建的虚拟屏不进菜单(它只是镜像的载体)
+        let virtualID = virtualDisplayCoordinator.activeVirtualDisplayID
+        displays = displayService.snapshotDisplays().filter { $0.displayID != virtualID }
+
+        // Sidecar 断开(或断开后稳定 ID 消失):结束虚拟屏会话
+        if let activeSidecar = virtualDisplayCoordinator.activeSession,
+           !displays.contains(where: { $0.stableID == activeSidecar.sidecarStableID }) {
+            virtualDisplayCoordinator.stop(reason: .sidecarDisconnected)
+        }
+
         refreshExtraModesIfNeeded()
         rebuildMenu()
         return menuModel
@@ -63,12 +88,18 @@ public final class TunerViewModel {
         let probe = config.experimentalSidecar
             ? (enhancer?.lastProbeReport ?? enhancer?.probePrivateStatus())
             : nil
+        var activeVirtual: [String: VirtualDisplaySpec] = [:]
+        if let session = virtualDisplayCoordinator.activeSession {
+            activeVirtual[session.sidecarStableID] = session.spec
+        }
         menuModel = menuBuilder.build(
             displays: displays,
             config: configStore.config,
             loginItemEnabled: loginItems.isEnabled,
             privateProbe: probe,
-            extraModes: extraModes
+            extraModes: extraModes,
+            activeVirtualDisplays: activeVirtual,
+            virtualDisplayAvailability: virtualFactory.availability()
         )
     }
 
@@ -101,6 +132,13 @@ public final class TunerViewModel {
 
         case .restoreDefaultMode(let stableID):
             restoreDefaultMode(on: stableID)
+
+        case .startVirtualDisplay(let stableID, let width, let height):
+            startVirtualDisplay(width: width, height: height, on: stableID)
+
+        case .stopVirtualDisplay(let stableID):
+            guard virtualDisplayCoordinator.activeSession?.sidecarStableID == stableID else { return }
+            virtualDisplayCoordinator.stop(reason: .userRequested)
 
         case .toggleExperimentalSidecar:
             toggleExperimentalSidecar()
@@ -182,6 +220,20 @@ public final class TunerViewModel {
         coordinator.request(mode: target, on: display)
     }
 
+    // MARK: - 虚拟屏
+
+    private func startVirtualDisplay(width: Int, height: Int, on stableID: String) {
+        guard let display = displays.first(where: { $0.stableID == stableID && $0.isSidecar }) else {
+            logger.error(
+                "virtual display target \(PrivacyRedactor.shortHash(stableID)) is not a connected sidecar",
+                context: "ViewModel"
+            )
+            return
+        }
+        let spec = VirtualDisplaySpec(width: width, height: height)
+        virtualDisplayCoordinator.start(spec: spec, mirroring: display)
+    }
+
     private func toggleExperimentalSidecar() {
         var config = configStore.config
         config.experimentalSidecar.toggle()
@@ -256,6 +308,28 @@ extension TunerViewModel: ModeChangeCoordinatorDelegate {
             configStore.save(config)
         case .applied, .reverted, .failed:
             break
+        }
+        refreshDisplays()
+    }
+}
+
+// MARK: - VirtualDisplayCoordinatorDelegate
+
+extension TunerViewModel: VirtualDisplayCoordinatorDelegate {
+
+    public func virtualDisplayCoordinator(
+        _ coordinator: VirtualDisplayCoordinator,
+        didProduce outcome: VirtualDisplayOutcome
+    ) {
+        onVirtualOutcome?(outcome)
+        if case .confirmed(let spec, let stableID) = outcome {
+            // 记录用户确认过的虚拟屏偏好(仅偏好,不做开机自动重建)
+            var config = configStore.config
+            var perDisplay = config.perDisplay[stableID] ?? PerDisplayConfig()
+            perDisplay.virtualDisplayWidth = spec.width
+            perDisplay.virtualDisplayHeight = spec.height
+            config.perDisplay[stableID] = perDisplay
+            configStore.save(config)
         }
         refreshDisplays()
     }

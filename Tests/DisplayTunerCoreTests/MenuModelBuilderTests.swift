@@ -300,6 +300,88 @@ final class MenuModelBuilderTests: XCTestCase {
         let toggle = advanced!.children!.first { $0.title == "实验性 Sidecar 增强" }!
         XCTAssertTrue(toggle.hasCheckmark)
     }
+
+    // MARK: - 虚拟屏(实验)
+
+    func testSidecarAdvancedContainsVirtualDisplayPresets() {
+        // 1180x820 的 Sidecar → 预设 1770x1230 / 2360x1640(推荐) / 2950x2050
+        let sidecar = DisplayCatalog.display(from: Fixtures.sidecarDisplay(modes: [
+            Fixtures.mode(1180, 820),
+        ]))
+        let menu = builder.build(
+            displays: [sidecar],
+            config: DisplayTunerConfig(),
+            loginItemEnabled: false,
+            privateProbe: nil,
+            activeVirtualDisplays: [:],
+            virtualDisplayAvailability: VirtualDisplayAvailability(isAvailable: true, missingClasses: [])
+        )
+
+        let advanced = find(menu.entries, title: "高级").first!
+        let virtualMenu = advanced.children!.first { $0.title == "虚拟屏(实验)" }!
+        let starts = findAction(virtualMenu.children ?? []) {
+            if case .startVirtualDisplay = $0 { return true }
+            return false
+        }
+        XCTAssertEqual(starts.count, 3, "三档预设")
+        XCTAssertTrue(starts.contains { $0.title.contains("2360×1640") && $0.title.contains("推荐") })
+        XCTAssertTrue(starts.contains { $0.title.contains("1770×1230") })
+    }
+
+    func testVirtualDisplayUnavailableShowsDisabledEntry() {
+        let sidecar = DisplayCatalog.display(from: Fixtures.sidecarDisplay())
+        let menu = builder.build(
+            displays: [sidecar],
+            config: DisplayTunerConfig(),
+            loginItemEnabled: false,
+            privateProbe: nil,
+            activeVirtualDisplays: [:],
+            virtualDisplayAvailability: VirtualDisplayAvailability(isAvailable: false, missingClasses: ["CGVirtualDisplay"])
+        )
+
+        let advanced = find(menu.entries, title: "高级").first!
+        let entry = advanced.children!.first { $0.title.hasPrefix("虚拟屏") }!
+        XCTAssertFalse(entry.isEnabled)
+        XCTAssertTrue(entry.title.contains("不可用"))
+        XCTAssertNil(entry.action)
+    }
+
+    func testActiveVirtualDisplayShowsRunningAndStop() {
+        let sidecar = DisplayCatalog.display(from: Fixtures.sidecarDisplay())
+        let active = VirtualDisplaySpec(width: 2360, height: 1640)
+        let menu = builder.build(
+            displays: [sidecar],
+            config: DisplayTunerConfig(),
+            loginItemEnabled: false,
+            privateProbe: nil,
+            activeVirtualDisplays: [sidecar.stableID: active],
+            virtualDisplayAvailability: nil
+        )
+
+        let advanced = find(menu.entries, title: "高级").first!
+        let virtualMenu = advanced.children!.first { $0.title == "虚拟屏(实验)" }!
+        let running = virtualMenu.children!.first { $0.title.hasPrefix("运行中") }!
+        XCTAssertTrue(running.title.contains("2360×1640"))
+        XCTAssertTrue(running.hasCheckmark)
+        XCTAssertFalse(running.isEnabled)
+
+        let stops = findAction(virtualMenu.children ?? []) {
+            if case .stopVirtualDisplay(let id) = $0 { return id == sidecar.stableID }
+            return false
+        }
+        XCTAssertEqual(stops.count, 1)
+    }
+
+    func testExternalDisplayHasNoVirtualDisplayEntry() {
+        let external = DisplayCatalog.display(from: Fixtures.externalDisplay())
+        let menu = builder.build(
+            displays: [external],
+            config: DisplayTunerConfig(),
+            loginItemEnabled: false,
+            privateProbe: nil
+        )
+        XCTAssertNil(find(menu.entries, title: "虚拟屏").first, "虚拟屏入口只给 Sidecar")
+    }
 }
 
 extension Array {

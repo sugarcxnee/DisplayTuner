@@ -6,10 +6,21 @@ public struct PerDisplayConfig: Codable, Equatable, Sendable {
     public var modeKey: String?
     /// 菜单"过滤"子菜单的当前选择。
     public var filters: Set<ModeFilter>
+    /// 上次确认保留的虚拟屏规格宽(仅记录偏好;虚拟屏不做开机自动重建)。
+    public var virtualDisplayWidth: Int?
+    /// 上次确认保留的虚拟屏规格高。
+    public var virtualDisplayHeight: Int?
 
-    public init(modeKey: String? = nil, filters: Set<ModeFilter> = []) {
+    public init(
+        modeKey: String? = nil,
+        filters: Set<ModeFilter> = [],
+        virtualDisplayWidth: Int? = nil,
+        virtualDisplayHeight: Int? = nil
+    ) {
         self.modeKey = modeKey
         self.filters = filters
+        self.virtualDisplayWidth = virtualDisplayWidth
+        self.virtualDisplayHeight = virtualDisplayHeight
     }
 }
 

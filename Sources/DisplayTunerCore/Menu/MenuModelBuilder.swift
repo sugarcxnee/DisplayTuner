@@ -11,12 +11,16 @@ public final class MenuModelBuilder {
     ///   - loginItemEnabled: 开机启动当前状态。
     ///   - privateProbe: 私有符号探测报告(实验开关开启且已探测时提供)。
     ///   - extraModes: 实验增强揭示的额外模式,按稳定 ID 索引。
+    ///   - activeVirtualDisplays: 运行中的虚拟屏会话(稳定 ID → 规格)。
+    ///   - virtualDisplayAvailability: 虚拟屏能力报告(nil = 未探测)。
     public func build(
         displays: [DisplayInfo],
         config: DisplayTunerConfig,
         loginItemEnabled: Bool,
         privateProbe: PrivateSymbolReport?,
-        extraModes: [String: [DisplayModeInfo]] = [:]
+        extraModes: [String: [DisplayModeInfo]] = [:],
+        activeVirtualDisplays: [String: VirtualDisplaySpec] = [:],
+        virtualDisplayAvailability: VirtualDisplayAvailability? = nil
     ) -> MenuModel {
         var entries: [MenuEntry] = []
 
@@ -33,7 +37,9 @@ public final class MenuModelBuilder {
                 entries.append(displayEntry(
                     display,
                     config: config,
-                    extraModes: extraModes[display.stableID] ?? []
+                    extraModes: extraModes[display.stableID] ?? [],
+                    activeVirtualDisplay: activeVirtualDisplays[display.stableID],
+                    virtualDisplayAvailability: virtualDisplayAvailability
                 ))
             }
         }
@@ -80,7 +86,9 @@ public final class MenuModelBuilder {
     private func displayEntry(
         _ display: DisplayInfo,
         config: DisplayTunerConfig,
-        extraModes: [DisplayModeInfo]
+        extraModes: [DisplayModeInfo],
+        activeVirtualDisplay: VirtualDisplaySpec?,
+        virtualDisplayAvailability: VirtualDisplayAvailability?
     ) -> MenuEntry {
         let perDisplay = config.perDisplay[display.stableID] ?? PerDisplayConfig()
         let filtered = ModeRanker.filter(
@@ -144,14 +152,21 @@ public final class MenuModelBuilder {
             title: "恢复默认模式",
             action: .restoreDefaultMode(displayStableID: display.stableID)
         ))
-        children.append(MenuEntry(
-            title: "高级",
-            children: [MenuEntry(
+        var advancedChildren: [MenuEntry] = [
+            MenuEntry(
                 title: "实验性 Sidecar 增强",
                 state: config.experimentalSidecar ? .on : .none,
                 action: .toggleExperimentalSidecar
-            )]
-        ))
+            )
+        ]
+        if display.isSidecar {
+            advancedChildren.append(virtualDisplayEntry(
+                display,
+                activeSpec: activeVirtualDisplay,
+                availability: virtualDisplayAvailability
+            ))
+        }
+        children.append(MenuEntry(title: "高级", children: advancedChildren))
 
         return MenuEntry(
             title: displayMenuTitle(display),
@@ -188,6 +203,48 @@ public final class MenuModelBuilder {
                 ? nil
                 : .selectMode(displayStableID: display.stableID, modeKey: mode.modeKey)
         )
+    }
+
+    // MARK: - 虚拟屏(实验)
+
+    private func virtualDisplayEntry(
+        _ display: DisplayInfo,
+        activeSpec: VirtualDisplaySpec?,
+        availability: VirtualDisplayAvailability?
+    ) -> MenuEntry {
+        // 能力不可用:如实提示,不显示档位
+        if let availability = availability, !availability.isAvailable {
+            return MenuEntry(title: "虚拟屏(实验)— \(availability.statusDescription)", isEnabled: false)
+        }
+
+        if let activeSpec = activeSpec {
+            return MenuEntry(title: "虚拟屏(实验)", children: [
+                MenuEntry(
+                    title: "运行中 \(activeSpec.title)",
+                    isEnabled: false,
+                    state: .on
+                ),
+                MenuEntry(
+                    title: "停止虚拟屏",
+                    action: .stopVirtualDisplay(displayStableID: display.stableID)
+                ),
+            ])
+        }
+
+        let presets = VirtualDisplayPresets.presets(for: display)
+        if presets.isEmpty {
+            return MenuEntry(title: "虚拟屏(实验)— 无可用基准分辨率", isEnabled: false)
+        }
+        return MenuEntry(title: "虚拟屏(实验)", children: presets.map { preset in
+            MenuEntry(
+                title: preset.title,
+                action: .startVirtualDisplay(
+                    displayStableID: display.stableID,
+                    width: preset.spec.width,
+                    height: preset.spec.height
+                )
+            )
+        })
     }
 
     private func filterEntry(display: DisplayInfo, filters: Set<ModeFilter>) -> MenuEntry {

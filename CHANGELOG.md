@@ -5,6 +5,35 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-27
+
+### Added
+
+- **虚拟屏增强(Sidecar 工作区扩大,BetterDisplay 式方案)**:
+  - Sidecar 的"高级 ▸ 虚拟屏(实验)"子菜单提供基于当前分辨率的
+    ×1.5 / ×2(推荐) / ×2.5 三档预设;
+  - `CoreDisplayVirtualDisplayFactory`:dlopen CoreDisplay 私有框架后经
+    objc_msgSend 运行时调用 `CGVirtualDisplay*` 类族创建任意分辨率虚拟屏,
+    不链接私有框架;激活目标模式用公共 CG API(实验确认 applySettings
+    只定义模式表,激活需显式切换);
+  - 镜像/解除用公共 `CGConfigureDisplayMirrorOfDisplay`;
+  - `VirtualDisplayCoordinator`:与模式切换同一套安全模式 —— 10 秒倒计时
+    自动还原、操作幂等、启动失败零残留、Sidecar 断开自动停止、
+    解除镜像失败如实上报且虚拟屏仍然销毁;
+  - NSAlert 倒计时确认框通用化,虚拟屏会话与模式切换共用安全交互;
+  - 枚举自动过滤自家虚拟屏;确认保留后按稳定 ID 记录偏好(不做开机自动重建)。
+- **Sidecar 识别增强**:EDID vendor/model 的 ASCII 身份编码
+  (实测随航屏 vendor="aapl"、model="iPad")作为强信号,
+  名称缺失(无 GUI 上下文)时也能正确识别。
+- 危险门控集成测试:`testDangerousVirtualDisplayRoundtripOnSidecar`
+  真实走一遍创建 → 镜像 → 确认 → 停止闭环。
+
+### Security / Safety
+
+- 虚拟屏私有 API 全部收敛在单个工厂文件,框架/类缺失时如实降级为
+  菜单中的"不可用"提示;所有会话结束路径(超时/手动/断开/取代)都保证
+  解除镜像并销毁虚拟屏。
+
 ## [0.1.0] - 2026-09-27
 
 首个可用版本:纯菜单栏的副屏分辨率调整工具。
@@ -43,5 +72,6 @@
 - 只有用户确认保留的模式才写入持久化配置;
 - 不直接链接私有框架;私有 API 默认关闭;App Store 分发风险已在 README 声明。
 
-[Unreleased]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Sugarcxne/DisplayTuner/releases/tag/v0.1.0

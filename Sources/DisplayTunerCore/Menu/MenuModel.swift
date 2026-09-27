@@ -54,6 +54,8 @@ public enum MenuAction: Equatable {
     case toggleFilter(displayStableID: String, filter: ModeFilter)
     case restoreDefaultMode(displayStableID: String)
     case toggleExperimentalSidecar
+    case startVirtualDisplay(displayStableID: String, width: Int, height: Int)
+    case stopVirtualDisplay(displayStableID: String)
     case toggleAutoRestore
     case toggleLaunchAtLogin
     case setLogLevel(LogLevel)

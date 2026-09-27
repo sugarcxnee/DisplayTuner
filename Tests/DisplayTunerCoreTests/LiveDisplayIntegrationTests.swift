@@ -112,10 +112,87 @@ final class ImmediateFireScheduler: CountdownScheduler {
     func fireAll() {
         let pending = handlers
         handlers = []
-        pending.forEach { $0() }
+        for handler in pending { handler() }
     }
 }
 
 final class NoopCancellable: Cancellable {
     func cancel() {}
+}
+
+extension LiveDisplayIntegrationTests {
+
+    /// 危险测试:对 Sidecar 真实走一遍"虚拟屏 + 镜像 + 停止"闭环。
+    /// 前提:Sidecar 已连接、有人在场;整个过程几秒内完成并自动恢复。
+    func testDangerousVirtualDisplayRoundtripOnSidecar() throws {
+        try XCTSkipUnless(dangerousAllowed,
+                          "设置 DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 且确保 Sidecar 已连接、有人在场")
+
+        let logger = DTLogger.makeDefault()
+        let service = CoreGraphicsDisplayService(logger: logger)
+        guard let sidecar = service.snapshotDisplays().first(where: \.isSidecar) else {
+            throw XCTSkip("当前无 Sidecar 连接")
+        }
+        guard let current = sidecar.currentMode else {
+            throw XCTSkip("Sidecar 无当前模式")
+        }
+
+        let mirror = CoreGraphicsMirrorService(logger: logger)
+        let factory = CoreDisplayVirtualDisplayFactory(logger: logger)
+        let recorder = VirtualDisplayRecorder()
+        let coordinator = VirtualDisplayCoordinator(
+            factory: factory,
+            mirror: mirror,
+            scheduler: ImmediateFireScheduler(),
+            logger: logger
+        )
+        coordinator.delegate = recorder
+
+        let onlineBefore = Self.onlineDisplayCount()
+
+        // 1. 启动:虚拟屏 = 当前逻辑分辨率 ×2
+        let spec = VirtualDisplaySpec(width: current.width * 2, height: current.height * 2)
+        coordinator.start(spec: spec, mirroring: sidecar)
+        XCTAssertEqual(
+            recorder.outcomes.last,
+            .started(spec: spec, virtualDisplayID: coordinator.activeVirtualDisplayID ?? 0, sidecarStableID: sidecar.stableID)
+        )
+        XCTAssertTrue(coordinator.hasPendingConfirmation)
+        XCTAssertTrue(mirror.isInMirrorSet(sidecar.displayID), "Sidecar 应处于镜像组")
+        XCTAssertEqual(Self.onlineDisplayCount(), onlineBefore + 1, "在线显示器应 +1")
+        if let vid = coordinator.activeVirtualDisplayID, let m = CGDisplayCopyDisplayMode(vid) {
+            print("📺 虚拟屏激活模式: \(m.width)x\(m.height) px\(m.pixelWidth)x\(m.pixelHeight)")
+            XCTAssertEqual(m.width, spec.width)
+            XCTAssertEqual(m.height, spec.height)
+        }
+
+        // 2. 确认保留
+        coordinator.confirmActive()
+        XCTAssertFalse(coordinator.hasPendingConfirmation)
+
+        // 3. 停止
+        coordinator.stop(reason: .userRequested)
+        XCTAssertNil(coordinator.activeSession)
+        XCTAssertEqual(Self.onlineDisplayCount(), onlineBefore, "虚拟屏销毁后在线数回落")
+        sleep(1)
+        XCTAssertFalse(mirror.isInMirrorSet(sidecar.displayID), "镜像应已解除")
+    }
+
+    private static func onlineDisplayCount() -> Int {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 32)
+        var count: UInt32 = 0
+        _ = CGGetOnlineDisplayList(32, &ids, &count)
+        return Int(count)
+    }
+}
+
+final class VirtualDisplayRecorder: VirtualDisplayCoordinatorDelegate {
+    private(set) var outcomes: [VirtualDisplayOutcome] = []
+
+    func virtualDisplayCoordinator(
+        _ coordinator: VirtualDisplayCoordinator,
+        didProduce outcome: VirtualDisplayOutcome
+    ) {
+        outcomes.append(outcome)
+    }
 }
