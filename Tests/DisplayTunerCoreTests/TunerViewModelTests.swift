@@ -566,6 +566,73 @@ final class TunerViewModelTests: XCTestCase {
         XCTAssertTrue(controller.applyCalls.isEmpty, "镜像组内的显示器一律不做自动恢复")
     }
 
+    // MARK: - 自动恢复节流(v0.2.5)
+
+    func testAutoRestoreCooldownSkipsRepeatWithinWindow() {
+        var config = configStore.config
+        config.perDisplay[sidecarDisplay.stableID] = PerDisplayConfig(modeKey: "2560x1600@60-hidpi")
+        configStore.config = config
+
+        viewModel.refreshDisplays()
+        viewModel.autoRestoreIfNeeded()
+        XCTAssertEqual(controller.applyCalls.count, 1, "第一次恢复应执行")
+
+        // 冷却窗口内再次触发(系统把模式拉回的场景):不再发起,避免弹窗循环
+        viewModel.autoRestoreIfNeeded()
+        XCTAssertEqual(controller.applyCalls.count, 1, "冷却窗口内不重复发起")
+    }
+
+    func testAutoRestoreResumesAfterCooldownExpires() {
+        var config = configStore.config
+        config.perDisplay[sidecarDisplay.stableID] = PerDisplayConfig(modeKey: "2560x1600@60-hidpi")
+        configStore.config = config
+
+        viewModel.refreshDisplays()
+        viewModel.autoRestoreIfNeeded()
+        // 模拟冷却过期
+        viewModel.autoRestoreCooldowns[sidecarDisplay.stableID] = Date().addingTimeInterval(-1)
+        viewModel.autoRestoreIfNeeded()
+        XCTAssertEqual(controller.applyCalls.count, 2, "冷却过期后可再次发起")
+    }
+
+    func testRevertedModeClearsPreferenceAndCoolsDown() {
+        var config = configStore.config
+        config.perDisplay[sidecarDisplay.stableID] = PerDisplayConfig(modeKey: "2560x1600@60-hidpi")
+        configStore.config = config
+
+        viewModel.refreshDisplays()
+        let target = sidecarDisplay.modes.first { $0.modeKey == "2560x1600@60-hidpi" }!
+        viewModel.perform(.selectMode(displayStableID: sidecarDisplay.stableID, modeKey: target.modeKey))
+        scheduler.fireLast()   // 超时回滚 = 用户否定
+
+        XCTAssertNil(
+            configStore.config.perDisplay[sidecarDisplay.stableID]?.modeKey,
+            "拒绝后保存的偏好必须清除,否则自动恢复会无限重试"
+        )
+        // 偏好已清除 + 长冷却:自动恢复不再发起(applyCalls 保持 selectMode 的那一次)
+        viewModel.autoRestoreIfNeeded()
+        XCTAssertEqual(controller.applyCalls.count, 1, "拒绝后自动恢复不再发起")
+    }
+
+    func testAutoRestoreGivesUpAfterRepeatedConfirms() {
+        var config = configStore.config
+        config.perDisplay[sidecarDisplay.stableID] = PerDisplayConfig(modeKey: "2560x1600@60-hidpi")
+        configStore.config = config
+        viewModel.refreshDisplays()
+
+        // 模拟系统反复对抗:确认 3 次后,第 4 轮自动恢复放弃
+        for _ in 0..<3 {
+            viewModel.autoRestoreIfNeeded()
+            viewModel.coordinator.confirmPending()
+            // 模拟系统拉回 + 冷却过期
+            viewModel.autoRestoreCooldowns[sidecarDisplay.stableID] = Date().addingTimeInterval(-1)
+        }
+        XCTAssertEqual(controller.applyCalls.count, 3)
+
+        viewModel.autoRestoreIfNeeded()
+        XCTAssertEqual(controller.applyCalls.count, 3, "达到放弃阈值后不再发起,避免与系统对抗循环")
+    }
+
     func testStopVirtualDisplayViaMenu() {
         viewModel.refreshDisplays()
         viewModel.perform(.startVirtualDisplay(

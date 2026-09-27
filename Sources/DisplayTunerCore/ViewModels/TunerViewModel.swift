@@ -30,6 +30,17 @@ public final class TunerViewModel {
     /// 活动会话的 Sidecar 连续"枚举缺失"计数:达到 2 才判定真正断开
     /// (切档/镜像重组的瞬间,Sidecar 可能短暂从枚举里消失,属正常瞬态)。
     private var sidecarMissCounts: [String: Int] = [:]
+    /// 自动恢复的冷却截止时间(按稳定 ID)。系统可能持续把显示器拉回
+    /// 它不认可的模式(镜像会话会扩充出这类"伪档"),无节制的自动恢复
+    /// 会与系统打乒乓球导致无限弹窗 —— 冷却窗口内不再发起恢复。
+    var autoRestoreCooldowns: [String: Date] = [:]
+    /// 同一显示器本次运行内自动恢复被确认的次数;达到上限后放弃
+    /// (说明系统在持续对抗该模式)。
+    private var autoRestoreConfirmCounts: [String: Int] = [:]
+    /// 自动恢复冷却时长与放弃阈值。
+    static let autoRestoreCooldown: TimeInterval = 120
+    static let autoRestoreRevertCooldown: TimeInterval = 600
+    static let autoRestoreGiveUpAfterConfirms = 3
 
     public init(
         displayService: DisplayService,
@@ -303,6 +314,19 @@ public final class TunerViewModel {
             guard let current = display.currentMode, current.modeKey != savedKey else {
                 continue
             }
+            // 冷却窗口内或已达放弃阈值:不再发起(防与系统对抗循环)
+            if let until = autoRestoreCooldowns[display.stableID], Date() < until {
+                continue
+            }
+            if autoRestoreConfirmCounts[display.stableID, default: 0]
+                >= Self.autoRestoreGiveUpAfterConfirms {
+                logger.info(
+                    "auto-restore for \(display.logDescriptor) gave up after \(Self.autoRestoreGiveUpAfterConfirms) confirms (system keeps reverting)",
+                    context: "ViewModel"
+                )
+                continue
+            }
+            autoRestoreCooldowns[display.stableID] = Date().addingTimeInterval(Self.autoRestoreCooldown)
             let candidates = display.modes + (extraModes[display.stableID] ?? [])
             guard let target = candidates.first(where: { $0.modeKey == savedKey }) else {
                 logger.info(
@@ -348,7 +372,25 @@ extension TunerViewModel: ModeChangeCoordinatorDelegate {
             perDisplay.modeKey = modeKey
             config.perDisplay[stableID] = perDisplay
             configStore.save(config)
-        case .applied, .reverted, .failed:
+            // 确认后进入冷却:若系统随即将模式拉回,冷却窗口内的
+            // 自动恢复不再打扰;连续确认多次则本会话放弃
+            autoRestoreCooldowns[stableID] = Date().addingTimeInterval(Self.autoRestoreCooldown)
+            autoRestoreConfirmCounts[stableID, default: 0] += 1
+        case .reverted(let stableID, _, _):
+            // 用户拒绝(或超时)即明确否定该偏好:清除保存的模式并长冷却,
+            // 否则系统把模式拉回后自动恢复会无限重试、弹窗循环
+            var config = configStore.config
+            if var perDisplay = config.perDisplay[stableID] {
+                perDisplay.modeKey = nil
+                config.perDisplay[stableID] = perDisplay
+                configStore.save(config)
+            }
+            autoRestoreCooldowns[stableID] = Date().addingTimeInterval(Self.autoRestoreRevertCooldown)
+            logger.info(
+                "mode change reverted for \(PrivacyRedactor.shortHash(stableID)) — cleared saved preference, cooling down auto-restore",
+                context: "ViewModel"
+            )
+        case .applied, .failed:
             break
         }
         refreshDisplays()

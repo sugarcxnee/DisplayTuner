@@ -5,6 +5,19 @@
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-09-27
+
+### Fixed
+
+- **修复自动恢复与系统"打乒乓球"导致的无限弹窗循环**:历史镜像会话会把
+  系统生成的高分辨率档留在 Sidecar 的模式表里(能设置但系统会持续拉回默认档),
+  自动恢复每次发现偏差就再发起恢复,循环弹窗且"不保留"也无效。
+  - 弹窗被拒绝(还原/超时)即**清除该显示器保存的模式偏好**并进入长冷却
+    (10 分钟)—— 用户明确否定的偏好不应再被自动恢复;
+  - 自动恢复/确认保留后进入 2 分钟冷却,系统拉回触发的下一轮恢复不再打扰;
+  - 同一显示器连续确认 3 次仍被系统拉回 → 本次运行内放弃自动恢复并留日志;
+  - README 疑难解答补充模式表污染的成因与"恢复默认模式"的清理办法。
+
 ## [0.2.4] - 2026-09-27
 
 ### Fixed
@@ -128,7 +141,8 @@
 - 只有用户确认保留的模式才写入持久化配置;
 - 不直接链接私有框架;私有 API 默认关闭;App Store 分发风险已在 README 声明。
 
-[Unreleased]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.1...v0.2.2
