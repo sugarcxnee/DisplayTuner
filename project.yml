@@ -1,0 +1,60 @@
+name: DisplayTuner
+options:
+  bundleIdPrefix: dev.displaytuner
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+
+packages:
+  DisplayTunerCore:
+    path: .
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  DisplayTuner:
+    type: application
+    platform: macOS
+    sources:
+      - Sources/DisplayTunerApp
+    dependencies:
+      - package: DisplayTunerCore
+        product: DisplayTunerCore
+    info:
+      path: Sources/DisplayTunerApp/Info.plist
+      properties:
+        CFBundleDisplayName: DisplayTuner
+        CFBundleName: DisplayTuner
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSUIElement: true
+        NSHighResolutionCapable: true
+        LSMinimumSystemVersion: "13.0"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.displaytuner.DisplayTuner
+        CODE_SIGN_IDENTITY: "-"
+
+  DisplayTunerCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests/DisplayTunerCoreTests
+    dependencies:
+      - package: DisplayTunerCore
+        product: DisplayTunerCore
+
+schemes:
+  DisplayTuner:
+    build:
+      targets:
+        DisplayTuner: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - DisplayTunerCoreTests
