@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             logger: logger
         )
         let modeController = CoreGraphicsDisplayModeController(logger: logger)
+        let virtualFactory = CoreDisplayVirtualDisplayFactory(logger: logger)
         let enhancer = ExperimentalSidecarEnhancer(
             displayService: displayService,
             privateServices: PrivateDisplayServices(logger: logger),
@@ -37,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             configStore: configStore,
             loginItems: loginItems,
             enhancer: enhancer,
+            virtualDisplayFactory: virtualFactory,
             logger: logger
         )
 
@@ -84,6 +86,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         logger.info("DisplayTuner started (menu bar only)", context: "App")
+        logger.info(
+            "virtual display availability: \(virtualFactory.availability().statusDescription)",
+            context: "App"
+        )
     }
 
     func applicationWillTerminate(_ notification: Notification) {

@@ -109,10 +109,16 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
     private var frameworkLoaded = false
 
     /// - Parameters:
-    ///   - frameworkLoader: 返回 false 时直接判定不可用(测试注入用)。
+    ///   - frameworkLoader: 显式加载框架的补救路径(类不可见时才使用;测试注入用)。
     public init(
-        frameworkLoader: @escaping (String) -> Bool = { path in
-            dlopen(path, RTLD_LAZY | RTLD_LOCAL) != nil
+        frameworkLoader: @escaping (String) -> Bool = { _ in
+            // 新系统上框架实体不在磁盘、dyld 缓存也不按此路径注册,dlopen 可能失败;
+            // 这不是错误 —— 类多半已由依赖链加载,availability 以类查找为准。
+            let candidates = [
+                CoreDisplayVirtualDisplayFactory.coreDisplayPath,
+                "/System/Library/PrivateFrameworks/CoreDisplay.framework/Versions/A/CoreDisplay",
+            ]
+            return candidates.contains { dlopen($0, RTLD_LAZY | RTLD_LOCAL) != nil }
         },
         queue: DispatchQueue = .main,
         logger: DTLogger = DTLogger()
@@ -123,11 +129,20 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
     }
 
     public func availability() -> VirtualDisplayAvailability {
-        guard ensureFrameworkLoaded() else {
-            return VirtualDisplayAvailability(isAvailable: false, missingClasses: Self.requiredClasses)
+        // 类通常已通过进程依赖链加载(Foundation/AppKit 传递依赖 CoreDisplay),
+        // dlopen 在新系统上反而会失败(框架实体不在磁盘、dyld 缓存按不同路径注册)。
+        // 因此以类查找为准;dlopen 仅作为类不可见时的补救手段。
+        let initiallyMissing = Self.requiredClasses.filter { NSClassFromString($0) == nil }
+        if initiallyMissing.isEmpty {
+            return VirtualDisplayAvailability(isAvailable: true, missingClasses: [])
         }
-        let missing = Self.requiredClasses.filter { NSClassFromString($0) == nil }
-        return VirtualDisplayAvailability(isAvailable: missing.isEmpty, missingClasses: missing)
+
+        // 类不全:尝试显式加载框架(旧系统磁盘有实体、或缓存命中)后复查
+        if !ensureFrameworkLoaded() {
+            return VirtualDisplayAvailability(isAvailable: false, missingClasses: initiallyMissing)
+        }
+        let stillMissing = Self.requiredClasses.filter { NSClassFromString($0) == nil }
+        return VirtualDisplayAvailability(isAvailable: stillMissing.isEmpty, missingClasses: stillMissing)
     }
 
     public func create(spec: VirtualDisplaySpec) throws -> VirtualDisplayHandle {
@@ -169,7 +184,7 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
         if frameworkLoaded { return true }
         frameworkLoaded = frameworkLoader(Self.coreDisplayPath)
         if !frameworkLoaded {
-            logger.info("CoreDisplay private framework not loadable — virtual display unavailable", context: "VirtualDisplay")
+            logger.info("CoreDisplay not loadable via dlopen (normal on new macOS); falling back to class lookup", context: "VirtualDisplay")
         }
         return frameworkLoaded
     }

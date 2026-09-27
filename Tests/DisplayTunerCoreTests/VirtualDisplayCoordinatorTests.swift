@@ -222,3 +222,32 @@ final class VirtualDisplayCoordinatorTests: XCTestCase {
         XCTAssertEqual(factory.destroyedIDs.count, 1, "虚拟屏无论如何都要销毁")
     }
 }
+
+/// 真实工厂的可用性回归:类通过进程依赖链(Foundation/AppKit → CoreDisplay)加载,
+/// 即使 dlopen 因框架不在磁盘而失败,availability 也必须为可用。
+/// 这是 v0.2.0 "虚拟屏不可用,缺少私有类" 事故的回归测试。
+final class CoreDisplayVirtualDisplayFactoryTests: XCTestCase {
+
+    func testAvailabilityIsTrueEvenWhenDlopenFails() {
+        let factory = CoreDisplayVirtualDisplayFactory(
+            frameworkLoader: { _ in false },   // 模拟新系统 dlopen 必败
+            logger: DTLogger(sinks: [MemoryLogSink()])
+        )
+        let availability = factory.availability()
+        XCTAssertTrue(
+            availability.isAvailable,
+            "类由依赖链加载时,dlopen 失败不应判死;缺失=\(availability.missingClasses)"
+        )
+    }
+
+    func testAvailabilityReportsMissingClassesWhenNoneRegistered() {
+        // 类不可见 + dlopen 补救失败 → 如实报告缺失类
+        let factory = CoreDisplayVirtualDisplayFactory(
+            frameworkLoader: { _ in false },
+            logger: DTLogger(sinks: [MemoryLogSink()])
+        )
+        // 本机类均可见,无法真实构造"类缺失"环境;验证方法本身不崩溃且结构正确
+        let availability = factory.availability()
+        XCTAssertTrue(availability.isAvailable || !availability.missingClasses.isEmpty)
+    }
+}

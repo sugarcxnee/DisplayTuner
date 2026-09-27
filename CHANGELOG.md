@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-27
+
+### Fixed
+
+- **修复"虚拟屏不可用,缺少私有类"误报**(v0.2.0 回归):新版 macOS 上
+  CoreDisplay 框架实体不在磁盘、dyld 缓存也不按旧路径注册,dlopen 必败;
+  但 `CGVirtualDisplay*` 类本来就通过进程依赖链(Foundation/AppKit)加载。
+  可用性判定改为以 `NSClassFromString` 类查找为准,dlopen 降级为类不可见时
+  的补救手段(双路径尝试);新增回归测试(dlopen 必败时可用性必须为真);
+  App 启动日志输出虚拟屏可用性,便于现场排查。
+
 ## [0.2.0] - 2026-09-27
 
 ### Added
@@ -72,6 +83,7 @@
 - 只有用户确认保留的模式才写入持久化配置;
 - 不直接链接私有框架;私有 API 默认关闭;App Store 分发风险已在 README 声明。
 
-[Unreleased]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Sugarcxne/DisplayTuner/releases/tag/v0.1.0
