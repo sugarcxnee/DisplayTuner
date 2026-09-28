@@ -36,6 +36,11 @@ public struct DisplayInfo: Equatable, Sendable {
     public let modes: [DisplayModeInfo]
     public let currentMode: DisplayModeInfo?
 
+    /// 系统锚定的原生尺寸(去重前的原始模式表中,同逻辑尺寸出现多个变体
+    /// 的最大档 —— 真机探测结论:镜像污染变体以原生尺寸为锚)。
+    /// 用于虚拟屏档位基准与镜像前的档位重置。
+    public let nativeAnchoredSize: (width: Int, height: Int)?
+
     public init(
         stableID: String,
         displayID: UInt32,
@@ -46,7 +51,8 @@ public struct DisplayInfo: Equatable, Sendable {
         bounds: CGRect,
         rotation: Double,
         modes: [DisplayModeInfo],
-        currentMode: DisplayModeInfo?
+        currentMode: DisplayModeInfo?,
+        nativeAnchoredSize: (width: Int, height: Int)? = nil
     ) {
         self.stableID = stableID
         self.displayID = displayID
@@ -58,6 +64,22 @@ public struct DisplayInfo: Equatable, Sendable {
         self.rotation = rotation
         self.modes = modes
         self.currentMode = currentMode
+        self.nativeAnchoredSize = nativeAnchoredSize
+    }
+
+    public static func == (lhs: DisplayInfo, rhs: DisplayInfo) -> Bool {
+        lhs.stableID == rhs.stableID
+            && lhs.displayID == rhs.displayID
+            && lhs.name == rhs.name
+            && lhs.category == rhs.category
+            && lhs.isMain == rhs.isMain
+            && lhs.isBuiltin == rhs.isBuiltin
+            && lhs.bounds == rhs.bounds
+            && lhs.rotation == rhs.rotation
+            && lhs.modes == rhs.modes
+            && lhs.currentMode == rhs.currentMode
+            && lhs.nativeAnchoredSize?.width == rhs.nativeAnchoredSize?.width
+            && lhs.nativeAnchoredSize?.height == rhs.nativeAnchoredSize?.height
     }
 
     /// 是否 Sidecar(分类或启发式命中)。

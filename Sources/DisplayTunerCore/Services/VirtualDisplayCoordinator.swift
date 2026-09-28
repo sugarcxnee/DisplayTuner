@@ -57,6 +57,8 @@ public protocol VirtualDisplayCoordinatorDelegate: AnyObject {
 public final class VirtualDisplayCoordinator {
 
     public static let defaultConfirmInterval: TimeInterval = 10
+    /// 超过此逻辑面积的 Sidecar 模式视为"镜像遗留高档"(原生约 1180×820 ≈ 0.97M)。
+    static let sidecarHighModeAreaThreshold = 2_200_000
 
     public let confirmInterval: TimeInterval
     public weak var delegate: VirtualDisplayCoordinatorDelegate?
@@ -128,6 +130,10 @@ public final class VirtualDisplayCoordinator {
 
         var created: VirtualDisplayHandle?
         do {
+            // 一律先切回锚定的原生档:真机实验表明 Sidecar 处于任何非原生档时,
+            // 虚拟屏的模式表发布与镜像协商都会被系统拒绝。
+            mirror.resetToDefaultMode(displayID: sidecar.displayID)
+            Thread.sleep(forTimeInterval: 1.0)
             let handle = try factory.create(spec: spec, additionalModes: additionalModes)
             created = handle
             try mirror.mirror(display: sidecar.displayID, toMaster: handle.displayID)

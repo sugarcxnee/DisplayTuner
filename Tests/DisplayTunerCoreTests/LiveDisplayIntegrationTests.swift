@@ -178,6 +178,101 @@ extension LiveDisplayIntegrationTests {
         XCTAssertFalse(mirror.isInMirrorSet(sidecar.displayID), "镜像应已解除")
     }
 
+    /// 危险测试(v0.2.6 回归):Sidecar 停留在镜像不接受的高分辨率档时,
+    /// 开虚拟屏(镜像)应经 fallback(切回默认档重试)成功,而不是直接失败。
+    func testDangerousMirrorFallbackWhenSidecarAtHighMode() throws {
+        try XCTSkipUnless(dangerousAllowed,
+                          "设置 DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 且确保 Sidecar 已连接、有人在场")
+
+        let logger = DTLogger.makeDefault()
+        let service = CoreGraphicsDisplayService(logger: logger)
+        guard let sidecar = service.snapshotDisplays().first(where: \.isSidecar) else {
+            throw XCTSkip("当前无 Sidecar 连接")
+        }
+
+        let factory = CoreDisplayVirtualDisplayFactory(logger: logger)
+        let mirror = CoreGraphicsMirrorService(logger: logger)
+        let coordinator = VirtualDisplayCoordinator(
+            factory: factory,
+            mirror: mirror,
+            scheduler: ImmediateFireScheduler(),
+            logger: logger
+        )
+        let recorder = VirtualDisplayRecorder()
+        coordinator.delegate = recorder
+
+        // 把 Sidecar 置于模式表里的最高档(镜像会话遗留的高分辨率档)
+        let highest = sidecar.modes.filter(\.isSafe).max { $0.width * $0.height < $1.width * $1.height }
+        guard let highest = highest else {
+            throw XCTSkip("无安全模式")
+        }
+        if let current = sidecar.currentMode, highest.modeKey != current.modeKey {
+            let modeController = CoreGraphicsDisplayModeController(logger: logger)
+            _ = try? modeController.apply(highest, to: sidecar)
+        }
+        print("📺 Sidecar 置于高档: \(highest.modeKey)(已在此档则直接用)")
+
+        // 在高档状态下启动虚拟屏:镜像 fallback 应让 start 成功
+        let presets = VirtualDisplayPresets.presets(for: sidecar)
+        let start = presets.first(where: { $0.isRecommended })?.spec ?? VirtualDisplaySpec(width: highest.width, height: highest.height)
+        coordinator.start(
+            spec: start,
+            additionalModes: presets.map(\.spec),
+            mirroring: sidecar
+        )
+        coordinator.stop(reason: .userRequested)
+        XCTAssertTrue(recorder.outcomes.contains {
+            if case .started = $0 { return true }
+            return false
+        }, "高档状态下 start 应通过镜像 fallback 成功,实际:\(recorder.outcomes)")
+    }
+
+    /// 危险测试:播种流程真机验证(在已解锁的机器上验证幂等与干净收尾:
+    /// 执行后高档仍在、Sidecar 回原生档、无虚拟屏残留、不在镜像组)。
+    func testDangerousSeedHighResolutionModes() throws {
+        try XCTSkipUnless(dangerousAllowed,
+                          "设置 DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 且确保 Sidecar 已连接、有人在场")
+
+        let logger = DTLogger.makeDefault()
+        let service = CoreGraphicsDisplayService(logger: logger)
+        guard let sidecar = service.snapshotDisplays().first(where: \.isSidecar) else {
+            throw XCTSkip("当前无 Sidecar 连接")
+        }
+        let modesBefore = sidecar.modes.map(\.modeKey)
+        let highBefore = sidecar.modes.filter {
+            $0.isSafe && Double($0.width * $0.height) > 1_200_000
+        }.count
+        let onlineBefore = Self.onlineDisplayCount()
+
+        let seeder = VirtualDisplaySeeder(
+            factory: CoreDisplayVirtualDisplayFactory(logger: logger),
+            mirror: CoreGraphicsMirrorService(logger: logger),
+            logger: logger
+        )
+        try seeder.seedHighResolutionModes(on: sidecar)
+
+        // 等待系统稳定后重新枚举
+        Thread.sleep(forTimeInterval: 2.0)
+        let after = service.snapshotDisplays()
+        guard let sidecarAfter = after.first(where: { $0.stableID == sidecar.stableID }) else {
+            return XCTFail("播种后 Sidecar 消失")
+        }
+        let highAfter = sidecarAfter.modes.filter {
+            $0.isSafe && Double($0.width * $0.height) > 1_200_000
+        }.count
+
+        print("📺 播种前高档数=\(highBefore), 播种后=\(highAfter), 当前=\(sidecarAfter.currentMode?.modeKey ?? "?")")
+        XCTAssertGreaterThanOrEqual(highAfter, highBefore, "播种不得丢失已有高档")
+        XCTAssertEqual(Self.onlineDisplayCount(), onlineBefore, "无虚拟屏残留")
+        XCTAssertFalse(CoreGraphicsMirrorService(logger: logger).isInMirrorSet(sidecarAfter.displayID), "不在镜像组")
+        if let anchor = sidecarAfter.nativeAnchoredSize,
+           let current = sidecarAfter.currentMode {
+            XCTAssertEqual(current.width, anchor.width, "收尾应回到原生档")
+            XCTAssertEqual(current.height, anchor.height)
+        }
+        _ = modesBefore
+    }
+
     private static func onlineDisplayCount() -> Int {
         var ids = [CGDirectDisplayID](repeating: 0, count: 32)
         var count: UInt32 = 0

@@ -25,6 +25,7 @@ public final class TunerViewModel {
     private let loginItems: LoginItemControlling
     private let virtualFactory: VirtualDisplayCreating
     private let virtualMirror: DisplayMirrorControlling
+    private let seeder: VirtualDisplaySeeding
     private let menuBuilder: MenuModelBuilder
     private let logger: DTLogger
     /// 活动会话的 Sidecar 连续"枚举缺失"计数:达到 2 才判定真正断开
@@ -50,6 +51,7 @@ public final class TunerViewModel {
         enhancer: SidecarEnhancer? = nil,
         virtualDisplayFactory: VirtualDisplayCreating = CoreDisplayVirtualDisplayFactory(),
         mirrorService: DisplayMirrorControlling = CoreGraphicsMirrorService(),
+        displaySeeder: VirtualDisplaySeeding? = nil,
         countdownScheduler: CountdownScheduler = DispatchCountdownScheduler(),
         virtualCountdownScheduler: CountdownScheduler = DispatchCountdownScheduler(),
         logger: DTLogger = DTLogger()
@@ -60,6 +62,11 @@ public final class TunerViewModel {
         self.loginItems = loginItems
         self.virtualFactory = virtualDisplayFactory
         self.virtualMirror = mirrorService
+        self.seeder = displaySeeder ?? VirtualDisplaySeeder(
+            factory: virtualDisplayFactory,
+            mirror: mirrorService,
+            logger: logger
+        )
         self.menuBuilder = MenuModelBuilder()
         self.logger = logger
         self.coordinator = ModeChangeCoordinator(
@@ -163,6 +170,9 @@ public final class TunerViewModel {
         case .restoreDefaultMode(let stableID):
             restoreDefaultMode(on: stableID)
 
+        case .seedHighResolutionModes(let stableID):
+            seedHighResolutionModes(on: stableID)
+
         case .startVirtualDisplay(let stableID, let width, let height):
             startVirtualDisplay(width: width, height: height, on: stableID)
 
@@ -259,6 +269,25 @@ public final class TunerViewModel {
     }
 
     // MARK: - 虚拟屏
+
+    /// 播种高分辨率模式:自动走一遍镜像会话让系统把高档写入持久化模式表,
+    /// 之后菜单里直接切换即可。无需确认框(全程可逆,收尾回原生档)。
+    private func seedHighResolutionModes(on stableID: String) {
+        guard let display = displays.first(where: { $0.stableID == stableID && $0.isSidecar }) else {
+            logger.error(
+                "seeding target \(PrivacyRedactor.shortHash(stableID)) is not a connected sidecar",
+                context: "ViewModel"
+            )
+            return
+        }
+        do {
+            try seeder.seedHighResolutionModes(on: display)
+            logger.info("high-resolution modes unlocked — refresh to see them", context: "ViewModel")
+        } catch {
+            logger.error("unlock high-resolution failed: \(error)", context: "ViewModel")
+        }
+        refreshDisplays()
+    }
 
     private func startVirtualDisplay(width: Int, height: Int, on stableID: String) {
         // 已有会话 → 原地切档(模式表在创建时已含全部档位)

@@ -79,6 +79,12 @@ final class MockMirrorService: DisplayMirrorControlling {
     }
 
     func isInMirrorSet(_ display: UInt32) -> Bool { members.contains(display) }
+
+    private(set) var resetCalls: [UInt32] = []
+
+    func resetToDefaultMode(displayID: UInt32) {
+        resetCalls.append(displayID)
+    }
 }
 
 final class VirtualDisplayOutcomeRecorder: VirtualDisplayCoordinatorDelegate {

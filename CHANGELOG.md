@@ -5,6 +5,27 @@
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-09-28
+
+### Added
+
+- **解锁高分辨率模式(播种)**:Sidecar 菜单新增"解锁高分辨率模式(一次性)",
+  自动走一遍"创建高档虚拟屏 → 镜像 → 切 ×2 → 撤除 → 回原生档"的播种流程,
+  让系统把高分辨率档写入 Sidecar 的**持久化**模式表(真机实测:断开重连后保留)。
+  之后无需虚拟屏即可直接在菜单里切换高档(已验证设置后稳定不被拉回)。
+  仅在尚未解锁时显示入口,一次解锁长期有效。
+- 原生档锚点判据:系统生成镜像污染变体时以原生尺寸为锚
+  (同逻辑尺寸出现多个变体),在解析层计算并随 DisplayInfo 传递,
+  用于虚拟屏档位基准与镜像前重置。
+
+### Fixed
+
+- **虚拟屏创建的多种时序失败**(真机实验结论):
+  - WindowServer 对虚拟屏创建有冷却(销毁后立即再开会失败)→ 自动退避重试;
+  - Sidecar 处于任何非原生档时,模式表发布与镜像协商被拒 →
+    创建/播种前一律重置回锚定的原生档;
+  - 虚拟屏事件队列默认改为独立串行队列,不再受主线程轮询阻塞。
+
 ## [0.2.5] - 2026-09-27
 
 ### Fixed
@@ -141,7 +162,8 @@
 - 只有用户确认保留的模式才写入持久化配置;
 - 不直接链接私有框架;私有 API 默认关闭;App Store 分发风险已在 README 声明。
 
-[Unreleased]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/Sugarcxne/DisplayTuner/compare/v0.2.2...v0.2.3

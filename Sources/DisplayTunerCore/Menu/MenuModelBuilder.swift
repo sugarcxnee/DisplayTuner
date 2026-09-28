@@ -134,13 +134,25 @@ public final class MenuModelBuilder {
             ))
         }
 
-        // Sidecar 且无更高模式:如实提示,不伪造
+        // Sidecar 且无更高模式:如实提示;若尚未解锁过,提供播种入口
         if display.isSidecar,
            !ModeRanker.hasHigherModes(than: display.currentMode, in: filtered) {
-            children.append(MenuEntry(
-                title: "当前随航连接未提供更高分辨率模式",
-                isEnabled: false
-            ))
+            if VirtualDisplaySeeder.hasHighResolutionModes(display) {
+                // 已解锁但当前连接未暴露更高档(如实说明,不伪造)
+                children.append(MenuEntry(
+                    title: "当前随航连接未提供更高分辨率模式",
+                    isEnabled: false
+                ))
+            } else {
+                children.append(MenuEntry(
+                    title: "解锁高分辨率模式(一次性)",
+                    action: .seedHighResolutionModes(displayStableID: display.stableID)
+                ))
+                children.append(MenuEntry(
+                    title: "当前随航连接未提供更高分辨率模式",
+                    isEnabled: false
+                ))
+            }
         }
 
         // 实验增强揭示的额外模式

@@ -23,6 +23,7 @@ final class TunerViewModelTests: XCTestCase {
         virtualFactory = MockVirtualDisplayFactory()
         virtualMirror = MockMirrorService()
         virtualScheduler = MockCountdownScheduler()
+        seeder = MockSeeder()
 
         let builtin = DisplayCatalog.display(from: Fixtures.builtinDisplay())
         let sidecar = DisplayCatalog.display(from: Fixtures.sidecarDisplay(modes: [
@@ -37,6 +38,8 @@ final class TunerViewModelTests: XCTestCase {
         viewModel = makeViewModel()
     }
 
+    private var seeder: MockSeeder!
+
     private func makeViewModel(enhancer: SidecarEnhancer? = nil) -> TunerViewModel {
         TunerViewModel(
             displayService: displayService,
@@ -46,6 +49,7 @@ final class TunerViewModelTests: XCTestCase {
             enhancer: enhancer,
             virtualDisplayFactory: virtualFactory,
             mirrorService: virtualMirror,
+            displaySeeder: seeder,
             countdownScheduler: scheduler,
             virtualCountdownScheduler: virtualScheduler,
             logger: DTLogger(sinks: [MemoryLogSink()])
@@ -631,6 +635,22 @@ final class TunerViewModelTests: XCTestCase {
 
         viewModel.autoRestoreIfNeeded()
         XCTAssertEqual(controller.applyCalls.count, 3, "达到放弃阈值后不再发起,避免与系统对抗循环")
+    }
+
+    func testSeedHighResolutionModesDispatchesToSeeder() {
+        viewModel.refreshDisplays()
+        viewModel.perform(.seedHighResolutionModes(displayStableID: sidecarDisplay.stableID))
+
+        XCTAssertEqual(seeder.seedCalls, [sidecarDisplay.stableID])
+    }
+
+    func testSeedFailingDoesNotCrashAndRefreshes() {
+        seeder.error = VirtualDisplayError.classesUnavailable(["CGVirtualDisplay"])
+        viewModel.refreshDisplays()
+        viewModel.perform(.seedHighResolutionModes(displayStableID: sidecarDisplay.stableID))
+
+        XCTAssertEqual(seeder.seedCalls.count, 1)
+        XCTAssertFalse(viewModel.menuModel.entries.isEmpty, "失败后菜单仍刷新")
     }
 
     func testStopVirtualDisplayViaMenu() {

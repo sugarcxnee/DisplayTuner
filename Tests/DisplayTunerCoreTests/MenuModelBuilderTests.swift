@@ -421,6 +421,58 @@ final class MenuModelBuilderTests: XCTestCase {
 
 
 
+    func testSeedEntryShownWhenNoHighModes() {
+        // 原始形态 Sidecar(无高档、无锚点)→ 显示解锁入口
+        let sidecar = DisplayCatalog.display(from: Fixtures.sidecarDisplay(modes: [
+            Fixtures.mode(1180, 820),
+        ]))
+        let menu = builder.build(
+            displays: [sidecar],
+            config: DisplayTunerConfig(),
+            loginItemEnabled: false,
+            privateProbe: nil
+        )
+        let seeds = findAction(menu.entries) {
+            if case .seedHighResolutionModes(let id) = $0 { return id == sidecar.stableID }
+            return false
+        }
+        XCTAssertEqual(seeds.count, 1, "未解锁时应提供播种入口")
+        XCTAssertTrue(menu.entries
+            .compactMap(\.children)
+            .flatMap { $0 }
+            .contains { $0.title == "当前随航连接未提供更高分辨率模式" && !$0.isEnabled })
+    }
+
+    func testSeedEntryHiddenWhenAlreadyUnlocked() {
+        // 已解锁(锚点 + 高档)→ 不再显示解锁入口
+        let record = RawDisplayRecord(
+            displayID: 5,
+            vendorNumber: 0x6161706c,
+            modelNumber: 0x69506164,
+            serialNumber: 0,
+            name: "iPad",
+            bounds: .zero,
+            currentModeIndex: 0,
+            modes: [
+                Fixtures.mode(1180, 820),
+                Fixtures.mode(2360, 1640),
+                Fixtures.mode(1180, 820, ioFlags: DisplayModeIOFlags.valid),
+            ]
+        )
+        let sidecar = DisplayCatalog.display(from: record)
+        let menu = builder.build(
+            displays: [sidecar],
+            config: DisplayTunerConfig(),
+            loginItemEnabled: false,
+            privateProbe: nil
+        )
+        let seeds = findAction(menu.entries) {
+            if case .seedHighResolutionModes = $0 { return true }
+            return false
+        }
+        XCTAssertTrue(seeds.isEmpty, "已解锁不再显示播种入口")
+    }
+
     func testExternalDisplayHasNoVirtualDisplayEntry() {
         let external = DisplayCatalog.display(from: Fixtures.externalDisplay())
         let menu = builder.build(

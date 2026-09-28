@@ -133,11 +133,14 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
             ]
             return candidates.contains { dlopen($0, RTLD_LAZY | RTLD_LOCAL) != nil }
         },
-        queue: DispatchQueue = .main,
+        queue: DispatchQueue? = nil,
         logger: DTLogger = DTLogger()
     ) {
         self.frameworkLoader = frameworkLoader
-        self.queue = queue
+        // 默认用独立串行队列:CGVirtualDisplay 的事件派发到 descriptor.queue,
+        // 若用 main queue,创建/切档流程中主线程的轮询等待会阻塞它,
+        // 模式表的发布会被卡住(真机表现为"not published within 3s")。
+        self.queue = queue ?? DispatchQueue(label: "dev.displaytuner.virtualdisplay")
         self.logger = logger
     }
 
@@ -164,6 +167,27 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
             throw VirtualDisplayError.classesUnavailable(available.missingClasses)
         }
 
+        // WindowServer 对虚拟屏创建有冷却期(真机实测:销毁后 1 秒内的下一次创建,
+        // 模式表可能迟迟不发布)—— 失败自动退避重试,消化"停止后立即再开"等场景。
+        var lastError: Error = VirtualDisplayError.createFailed("unreachable")
+        for attempt in 0..<3 {
+            do {
+                return try attemptCreate(spec: spec, additionalModes: additionalModes)
+            } catch {
+                lastError = error
+                logger.info(
+                    "create attempt \(attempt + 1) failed (\(error)); backing off before retry",
+                    context: "VirtualDisplay"
+                )
+                if attempt < 2 {
+                    Thread.sleep(forTimeInterval: 1.0 + Double(attempt) * 2.0)
+                }
+            }
+        }
+        throw lastError
+    }
+
+    private func attemptCreate(spec: VirtualDisplaySpec, additionalModes: [VirtualDisplaySpec]) throws -> VirtualDisplayHandle {
         var displayObject: AnyObject?
         do {
             let table = [spec] + additionalModes.filter { $0.key != spec.key }
@@ -186,7 +210,6 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
                 var release: AnyObject? = object
                 release = nil
             }
-            logger.error("virtual display create failed: \(error)", context: "VirtualDisplay")
             throw error
         }
     }
