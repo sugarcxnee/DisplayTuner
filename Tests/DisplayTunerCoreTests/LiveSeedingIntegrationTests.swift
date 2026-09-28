@@ -7,6 +7,10 @@ import CoreGraphics
 /// 前提:Sidecar 已连接、有人在场;app 退出或在场观察。
 /// 门控:`DISPLAYTUNER_RUN_DANGEROUS_TESTS=1`。
 ///
+/// 断言纪律(2026-09-28 边栏几何):模式表是随有效面板面积实时再生的阶梯,
+/// 档数与具体档位随 iPad 边栏状态平移(1180/2360 ↔ 1116/2232 家族)——
+/// 本测试只用相对断言(播种前后高档数不降、收尾档 == 同次枚举的锚点)。
+///
 /// 已解锁机器上验证幂等(高档已在,流程跑通、不丢档、无残留);
 /// "从零写入"需在未解锁机器(或新用户账户)上验证。
 final class LiveSeedingIntegrationTests: XCTestCase {
