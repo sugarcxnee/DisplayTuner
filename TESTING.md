@@ -52,7 +52,40 @@ DISPLAYTUNER_RUN_LIVE_TESTS=1 swift test --filter LiveDisplayIntegrationTests
 
 # 危险切换(仅连接了可承受黑屏的副屏时!)
 DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 swift test --filter testDangerousApplyAndRollbackOnSecondaryDisplay
+
+# 播种验收(Sidecar 已连接时)
+DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 swift test --filter LiveSeedingIntegrationTests
 ```
+
+## 真机行为归档(2026-09-28 全天实验,v1.0 设计依据)
+
+### 边栏几何:模式表是实时阶梯,不是静态清单
+
+iPad 边栏显示/隐藏会让 Sidecar 的整个模式家族原位互换(锚 1180×820 ↔
+1116×820,顶档 2360×1640 ↔ 2232×1640;宽度差 = 64pt 边栏 @2x)。持久层
+(`/Library/Preferences/com.apple.windowserver.displays.plist`,注意 plutil
+输出为 `=>` 格式)两个家族记录俱在 —— 持久的是能力,阶梯由会话几何再生。
+**推论**:断言"档数/具体档位"的测试随边栏状态 flake,断言必须用面积相对
+关系表达;Sidecar 的 serialNumber 同因边栏状态漂移,v1.0 稳定 ID 对 Sidecar
+改用 vendor+model。
+
+### "切档变糊"最终定性:2x 渲染是系统私有状态
+
+同一逻辑档(如 1180×820)存在 1x/2x 两种实际渲染倍率:2x(backing 2360×1640)
+字体清晰,1x(backing 1180×820 再拉伸)发虚。**2x 状态不作为模式条目暴露** ——
+含 kCGDisplayShowDuplicateLowResolutionModes 的完整枚举里也不存在 2x 条目,
+公共 API 四条路径全部无法到达:选条目(无条目)、configure 前变体升级
+(无变体)、CGRestorePermanentDisplayConfiguration(恢复的是调用方写入的
+永久档)、镜像微操(不触发重协商)。只有系统自身路径(控制中心切换边栏、
+系统设置操作缩放)落在 2x。用户策略:要清晰用 2360×1640 档(与清晰 820p
+物理像素完全相同);要"清晰的 820p"切档后在控制中心切一次边栏。同尺寸
+HiDPI 收敛(见 31eef6f)保留 —— 对真有 1x/2x 双条目的显示器是正确防御。
+
+### v0.2 线遗留的创建类怪癖(历史,详见 main 分支)
+
+5120 framebuffer 上限(模式物理宽 >5120 整表静默丢弃)、HiDPI 声明语义、
+镜像播种持久化机理、v0.2.2 起分辨率折半与 v0.2.5/2.6 创建回归 ——
+均已随 v1.0 重写搁置,完整归档在 main 分支 TESTING.md。
 
 ## 手动验收清单
 
