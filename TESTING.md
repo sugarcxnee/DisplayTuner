@@ -27,6 +27,7 @@ CI(`.github/workflows/ci.yml`)在 macOS runner 上依次执行
 | ModeRankerTests | HiDPI 优先、Sidecar 4:3 加分、刷新率舒适区、隔行惩罚、稳定排序、过滤组合、当前模式保留、无更高模式判定 |
 | ModeChangeCoordinatorTests | 成功/确认保留、超时回滚、应用失败、幂等(重复超时/确认后超时)、取代、回滚失败不悬挂 |
 | CoreGraphicsDisplayModeControllerTests | 真实控制器的安全失败路径(不在线显示器、不可用模式) |
+| HiDPIModeCacheTests | 影子 HiDPI 机制纯逻辑:ShadowModeMerge 注入/去重、注入后的目录收敛与当前档传播、sizeKey 跨倍率匹配 |
 | ConfigStoreTests | 读写 roundtrip、损坏备份回退、字段级容错、导出导入、版本拒绝 |
 | SidecarEnhancerTests | 私有符号探测(库缺失/符号缺失)、隐藏模式 diff、降级公共 API |
 | MenuModelBuilderTests | 菜单结构、当前模式 ✓、分组顺序、Sidecar 提示、开关状态、过滤器勾选、增强分组 |
@@ -55,6 +56,9 @@ DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 swift test --filter testDangerousApplyAndRoll
 
 # 播种验收(Sidecar 已连接时)
 DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 swift test --filter LiveSeedingIntegrationTests
+
+# 影子 HiDPI 端到端验收(Sidecar 已连接且处于清晰态时:切走→切回自动落 2x)
+DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 swift test --filter LiveShadowHiDPIIntegrationTests
 ```
 
 ## 真机行为归档(2026-09-28 全天实验,v1.0 设计依据)
@@ -69,17 +73,62 @@ iPad 边栏显示/隐藏会让 Sidecar 的整个模式家族原位互换(锚 118
 关系表达;Sidecar 的 serialNumber 同因边栏状态漂移,v1.0 稳定 ID 对 Sidecar
 改用 vendor+model。
 
-### "切档变糊"最终定性:2x 渲染是系统私有状态
+### "切档变糊"最终定性(修订):2x 对象不进枚举,但对象引用可配置
 
 同一逻辑档(如 1180×820)存在 1x/2x 两种实际渲染倍率:2x(backing 2360×1640)
-字体清晰,1x(backing 1180×820 再拉伸)发虚。**2x 状态不作为模式条目暴露** ——
-含 kCGDisplayShowDuplicateLowResolutionModes 的完整枚举里也不存在 2x 条目,
-公共 API 四条路径全部无法到达:选条目(无条目)、configure 前变体升级
-(无变体)、CGRestorePermanentDisplayConfiguration(恢复的是调用方写入的
-永久档)、镜像微操(不触发重协商)。只有系统自身路径(控制中心切换边栏、
-系统设置操作缩放)落在 2x。用户策略:要清晰用 2360×1640 档(与清晰 820p
-物理像素完全相同);要"清晰的 820p"切档后在控制中心切一次边栏。同尺寸
-HiDPI 收敛(见 31eef6f)保留 —— 对真有 1x/2x 双条目的显示器是正确防御。
+字体清晰,1x(backing 1180×820 再拉伸)发虚。**2x 模式对象由系统在 framebuffer
+重建时(边栏切换、连接建立)内部合成,从不作为模式条目暴露** —— 清晰态下带
+`kCGDisplayShowDuplicateLowResolutionModes` 的完整枚举也全部 1x(14 条,实测)。
+
+早期结论"公共 API 全部无法到达"已被**第五条路径**推翻(2026-09-28 晚,
+`/tmp/exp_retained2x.swift`):**持有清晰态 `CGDisplayCopyDisplayMode` 返回的
+2x 对象引用,在糊态下直接 `CGConfigureDisplayWithDisplayMode` → success,
+读回 2x,清晰态经纯程序路径恢复**。对象跨档位切换仍有效;恢复后 WindowServer
+持久层记录 `Scale => 2`。四条旧路径(选条目/变体升级/Restore/镜像微操)
+失败的原因一致:它们都只能引用"枚举中的条目",而 2x 对象不在其中。
+
+**修复机制(影子 HiDPI 缓存,`HiDPIModeCache`)**:
+- 凡读到某显示器当前档为 HiDPI 即捕获对象引用(它必然刚由系统路径设置);
+- 快照时把影子条目元数据注入模式表(`ShadowModeMerge`),经既有同尺寸
+  HiDPI 收敛后成为菜单条目 —— 勾选正确、直接可点选;
+- apply/rollback 的目标查找在枚举未命中时回退影子对象;configure 失败或
+  验证未落在 2x 时自动失效该缓存条目(防边栏家族互换后的陈旧对象)。
+
+**残余限制**:影子对象无法持久化,进程退出即失。冷启动若系统未先到过
+清晰态,缓存为空、如实降级(菜单不出现 HiDPI 条目)。触发系统路径的
+已知事件:边栏切换、Sidecar 断开重连(**重连后系统自动落原生档 2x,实测**)。
+程序触发探索结论:`CGConfigureDisplayRotation` 非公开 API;SkyLight /
+DisplayServices 无旋转/HiDPI 写入符号(dlsym 全部落空);杀
+SidecarDisplayAgent 会断开 Sidecar 会话(agent 自动重启但显示器不自动恢复,
+需要 iPad 重新发起);解除镜像恢复的是持久档而非 2x 原生(从顶档实测);
+播种流程在已解锁机器走 alreadyUnlocked 跳过,无从作为触发器 —— 均不可用,
+连接建立(且上次持久档为 2x 时)与边栏切换是仅有的系统路径入口。
+镜像协商档陷阱(实测):挂镜像期间 `CGDisplayCopyDisplayMode` 返回主屏的
+2x 协商档,会被影子缓存误捕获 —— 捕获必须排除镜像态
+(`CGDisplayIsInMirrorSet == 0`)。
+
+**边栏切换"回清晰"是条件性的 + 持久档毒化(2026-09-28 深夜实测)**:
+边栏切换时系统设回原生档,但**倍率取自 WindowServer 配置集
+(`com.apple.windowserver.displays.plist`)中该显示器的惯用记录,不是无条件
+2x**。程序 configure 1x 档会把惯用记录写成 Scale=1 —— 当天实验序列
+(live 测试切顶档、autoRestore 回滚)把 229 个 Sidecar 槽中的 178 个写成
+(820p, Scale=1) 后,边栏切换永久落糊,任何切换都救不回;**重启 Mac 恢复**
+(系统启动建立 Sidecar 会话时重写默认 2x —— 即日常"连上就清晰"的来源)。
+推论:产品对 Sidecar 的 configure 必须经影子升级落 2x(已实现),否则一次
+1x 持久化就会毒化用户的边栏切换;系统设置对随航屏没有分辨率 UI
+(正是本项目存在的理由),用户侧恢复手段只有重启/注销。
+候选防再发策略(未实施):影子缓存不可用且目标为原生档时,选顶档
+(1x 点对点,清晰但 UI 小)而非 1x 原生档,至少不把惯用档毒化成"糊 820p"。
+
+**端到端终验(2026-09-28 22:28,重启恢复清晰态后)**:
+`DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 swift test --filter LiveShadowHiDPIIntegrationTests`
+通过 —— `1180x820@60-hidpi → 2360x1640@60(切走)→ 1180x820@60-hidpi
+(切回自动落 2x)`,物理渲染像素与清晰态一致。修复闭环成立。
+
+**Sidecar 虚拟 EDID(2026-09-28 实测)**:连接后 vendor/model 恰为 ASCII
+`"aapl"`(0x6161706C)/`"iPad"`(0x69506164),已加入启发式最强信号;
+旧观察的"全 0 EDID"形态也保留覆盖。另:CGDirectDisplayID 会随重连漂移
+(实测 115 → 118),印证稳定 ID 不得依赖 displayID。
 
 ### v0.2 线遗留的创建类怪癖(历史,详见 main 分支)
 
