@@ -169,25 +169,62 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
 
         // WindowServer 对虚拟屏创建有冷却期(真机实测:销毁后 1 秒内的下一次创建,
         // 模式表可能迟迟不发布)—— 失败自动退避重试,消化"停止后立即再开"等场景。
+        // 但真机实测(2026-09-28):激活失败后释放对象,WindowServer 端实体**可能
+        // 仍在线**(成功销毁则正常离线)——盲目重试会逐次堆积残影(一次失败曾留
+        // 三具)。因此每次重试前必须确认上一轮残影已离线,等不到就停止重试。
         var lastError: Error = VirtualDisplayError.createFailed("unreachable")
+        var ghostID: UInt32 = 0
         for attempt in 0..<3 {
             do {
-                return try attemptCreate(spec: spec, additionalModes: additionalModes)
+                return try attemptCreate(
+                    spec: spec,
+                    additionalModes: additionalModes,
+                    failedDisplayID: &ghostID
+                )
             } catch {
                 lastError = error
+                guard attempt < 2 else { break }
+                if ghostID != 0, !Self.waitUntilOffline(displayID: ghostID, timeout: 5) {
+                    logger.error(
+                        "failed attempt left virtual display \(ghostID) online; aborting retries to avoid residue buildup",
+                        context: "VirtualDisplay"
+                    )
+                    break
+                }
                 logger.info(
                     "create attempt \(attempt + 1) failed (\(error)); backing off before retry",
                     context: "VirtualDisplay"
                 )
-                if attempt < 2 {
-                    Thread.sleep(forTimeInterval: 1.0 + Double(attempt) * 2.0)
-                }
+                Thread.sleep(forTimeInterval: 1.0 + Double(attempt) * 2.0)
             }
         }
         throw lastError
     }
 
-    private func attemptCreate(spec: VirtualDisplaySpec, additionalModes: [VirtualDisplaySpec]) throws -> VirtualDisplayHandle {
+    /// 等待系统端的虚拟屏实体离线(注销是异步的);超时返回 false。
+    /// 用 CGGetOnlineDisplayList 轮询(仅列 ID,无模式查询,不会触发
+    /// 同进程创建抑制——见 TESTING.md 的对照实验记录)。
+    static func waitUntilOffline(displayID: UInt32, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !displayIsOnline(displayID) { return true }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return !displayIsOnline(displayID)
+    }
+
+    static func displayIsOnline(_ displayID: UInt32) -> Bool {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 32)
+        var count: UInt32 = 0
+        _ = CGGetOnlineDisplayList(32, &ids, &count)
+        return ids.prefix(Int(count)).contains(displayID)
+    }
+
+    private func attemptCreate(
+        spec: VirtualDisplaySpec,
+        additionalModes: [VirtualDisplaySpec],
+        failedDisplayID: inout UInt32
+    ) throws -> VirtualDisplayHandle {
         var displayObject: AnyObject?
         do {
             let table = [spec] + additionalModes.filter { $0.key != spec.key }
@@ -205,8 +242,10 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
                 object: object
             )
         } catch {
-            // 失败清理:不留半成品虚拟屏
+            // 失败清理:不留半成品虚拟屏。同时取出系统端 displayID 交给调用方
+            // 校验——释放对象并不保证 WindowServer 端实体注销(见 create 注释)。
             if let object = displayObject {
+                failedDisplayID = Self.sendU32(object, "displayID")
                 var release: AnyObject? = object
                 release = nil
             }
