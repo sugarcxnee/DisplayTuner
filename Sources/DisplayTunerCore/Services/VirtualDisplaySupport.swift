@@ -173,20 +173,19 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
         // 仍在线**(成功销毁则正常离线)——盲目重试会逐次堆积残影(一次失败曾留
         // 三具)。因此每次重试前必须确认上一轮残影已离线,等不到就停止重试。
         var lastError: Error = VirtualDisplayError.createFailed("unreachable")
-        var ghostID: UInt32 = 0
         for attempt in 0..<3 {
             do {
-                return try attemptCreate(
-                    spec: spec,
-                    additionalModes: additionalModes,
-                    failedDisplayID: &ghostID
-                )
+                return try attemptCreate(spec: spec, additionalModes: additionalModes)
             } catch {
                 lastError = error
                 guard attempt < 2 else { break }
-                if ghostID != 0, !Self.waitUntilOffline(displayID: ghostID, timeout: 5) {
+                // 注意:失败 displayID 经实例属性而非 inout 传递 —— throws 边界上
+                // 的 inout 写回在优化构建(Release)下不可靠,曾致残影检查静默失效。
+                let ghost = lastFailedDisplayID
+                lastFailedDisplayID = 0
+                if ghost != 0, !Self.waitUntilOffline(displayID: ghost, timeout: 5) {
                     logger.error(
-                        "failed attempt left virtual display \(ghostID) online; aborting retries to avoid residue buildup",
+                        "failed attempt left virtual display \(ghost) online; aborting retries to avoid residue buildup",
                         context: "VirtualDisplay"
                     )
                     break
@@ -200,6 +199,9 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
         }
         throw lastError
     }
+
+    /// 最近一次失败尝试在系统端留下的 displayID(0 = 未取得)。
+    private var lastFailedDisplayID: UInt32 = 0
 
     /// 等待系统端的虚拟屏实体离线(注销是异步的);超时返回 false。
     /// 用 CGGetOnlineDisplayList 轮询(仅列 ID,无模式查询,不会触发
@@ -220,11 +222,7 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
         return ids.prefix(Int(count)).contains(displayID)
     }
 
-    private func attemptCreate(
-        spec: VirtualDisplaySpec,
-        additionalModes: [VirtualDisplaySpec],
-        failedDisplayID: inout UInt32
-    ) throws -> VirtualDisplayHandle {
+    private func attemptCreate(spec: VirtualDisplaySpec, additionalModes: [VirtualDisplaySpec]) throws -> VirtualDisplayHandle {
         var displayObject: AnyObject?
         do {
             let table = [spec] + additionalModes.filter { $0.key != spec.key }
@@ -242,10 +240,10 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
                 object: object
             )
         } catch {
-            // 失败清理:不留半成品虚拟屏。同时取出系统端 displayID 交给调用方
-            // 校验——释放对象并不保证 WindowServer 端实体注销(见 create 注释)。
+            // 失败清理:不留半成品虚拟屏。同时取出系统端 displayID 存入实例属性
+            // 供 create 校验——释放对象并不保证 WindowServer 端实体注销。
             if let object = displayObject {
-                failedDisplayID = Self.sendU32(object, "displayID")
+                lastFailedDisplayID = Self.sendU32(object, "displayID")
                 var release: AnyObject? = object
                 release = nil
             }
