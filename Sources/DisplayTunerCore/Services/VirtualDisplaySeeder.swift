@@ -52,6 +52,9 @@ public final class VirtualDisplaySeeder: VirtualDisplaySeeding {
         )
         // 前置:一律把 Sidecar 切回锚定的原生档(真机实验:Sidecar 处于任何
         // 非原生档时,虚拟屏的模式表发布与镜像协商都会被系统拒绝)。
+        // 已知限制(2026-09-28 探针):对 Sidecar 的切档动作本身会让 WindowServer
+        // 拒绝随后一段时间的虚拟屏创建(重试无效,Sidecar 重连后解除)——
+        // 播种失败时先重连 Sidecar 再试,排查步骤见 TESTING.md。
         mirror.resetToDefaultMode(displayID: sidecar.displayID)
         Thread.sleep(forTimeInterval: 1.0)
 

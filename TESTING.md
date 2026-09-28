@@ -59,6 +59,20 @@ DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 swift test --filter testDangerousVirtualDispl
 
 > **跑危险测试前先退出 DisplayTuner 菜单栏应用。** 应用与测试进程写同一份日志、同时监听屏幕变化:测试把 Sidecar 重置到原生档后,应用侧的自动恢复会立刻把档位拉回去,虚拟屏模式表发布随之被系统拒绝(真机日志证实过此跨进程竞争,极易误判为 WindowServer 异常)。
 
+### 环境状态与"解毒"(2026-09-28 真机探针结论)
+
+虚拟屏创建失败(`not published to CG table` / 私有错误码 1014)**不一定是代码问题**,
+用裸创建探针(不碰 Sidecar 的 create→destroy)可以区分:
+
+- 对 Sidecar 做过档位切换(哪怕切回它已在的原生档)之后,虚拟屏创建会被
+  WindowServer **持续拒绝**,等待 5 分钟以上也不自愈;
+- 历史日志显示 **Sidecar 断开重连**(displayID 变化)后创建恢复;注销重登同理;
+- 连续失败的重试本身会加剧该状态——复验失败后不要立刻反复重试,
+  先重连 Sidecar 再试。
+
+因此播种/虚拟屏失败时按此顺序排查:① app 是否退出(跨进程自扰) →
+② 裸创建探针(能力是否被拒) → ③ 重连 Sidecar 解毒 → ④ 再跑完整流程。
+
 ## 手动验收清单
 
 1. `make build && make run` —— 应用启动后:
