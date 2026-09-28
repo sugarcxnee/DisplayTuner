@@ -50,13 +50,20 @@ public final class VirtualDisplaySeeder: VirtualDisplaySeeding {
             "seeding high-resolution modes for \(sidecar.logDescriptor) (base \(base.width)x\(base.height))",
             context: "Seeder"
         )
-        // 前置:一律把 Sidecar 切回锚定的原生档(真机实验:Sidecar 处于任何
-        // 非原生档时,虚拟屏的模式表发布与镜像协商都会被系统拒绝)。
-        // 已知限制(2026-09-28 探针):对 Sidecar 的切档动作本身会让 WindowServer
-        // 拒绝随后一段时间的虚拟屏创建(重试无效,Sidecar 重连后解除)——
-        // 播种失败时先重连 Sidecar 再试,排查步骤见 TESTING.md。
-        mirror.resetToDefaultMode(displayID: sidecar.displayID)
-        Thread.sleep(forTimeInterval: 1.0)
+        // 前置:把 Sidecar 切回锚定的原生档(真机实验:Sidecar 处于任何非原生档时,
+        // 虚拟屏的模式表发布与镜像协商都会被系统拒绝)。
+        // 关键(2026-09-28 对照实验):对 Sidecar displayID 的**模式类查询**
+        // (CGDisplayCopyDisplayMode / CopyAllDisplayModes)会抑制同进程随后的
+        // 虚拟屏创建(模式表不发布,>25 秒不解除;仅 OnlineList/IsBuiltin 分类
+        // 查询无害)。因此播种流程绝不查询 Sidecar 模式:基准档由调用方先验
+        // 传入;已在原生档时(未解锁机器的常态)连 reset 事务也一并跳过。
+        let needsReset = sidecar.currentMode.map {
+            $0.width != base.width || $0.height != base.height
+        } ?? true
+        if needsReset {
+            mirror.resetToDefaultMode(displayID: sidecar.displayID)
+            Thread.sleep(forTimeInterval: 1.0)
+        }
 
         let presets = VirtualDisplayPresets.presets(baseWidth: base.width, baseHeight: base.height)
         guard let preferred = presets.first(where: { $0.isRecommended })?.spec else {

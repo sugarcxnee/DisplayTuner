@@ -67,8 +67,8 @@ final class VirtualDisplaySeederTests: XCTestCase {
         XCTAssertEqual(factory.destroyedIDs.count, 1, "销毁虚拟屏")
         XCTAssertEqual(
             mirror.resetCalls,
-            [sidecar.displayID, sidecar.displayID],
-            "前置(回原生档保证发布/镜像可行)+ 收尾(干净离场)各重置一次"
+            [sidecar.displayID],
+            "已在原生档:跳过前置 reset(真机实验:CG 配置事务本身会让系统拒绝紧随的创建),仅收尾重置一次"
         )
         XCTAssertFalse(mirror.isInMirrorSet(sidecar.displayID))
     }

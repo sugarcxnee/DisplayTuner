@@ -130,10 +130,15 @@ public final class VirtualDisplayCoordinator {
 
         var created: VirtualDisplayHandle?
         do {
-            // 一律先切回锚定的原生档:真机实验表明 Sidecar 处于任何非原生档时,
-            // 虚拟屏的模式表发布与镜像协商都会被系统拒绝。
-            mirror.resetToDefaultMode(displayID: sidecar.displayID)
-            Thread.sleep(forTimeInterval: 1.0)
+            // 先切回锚定的原生档:真机实验表明 Sidecar 处于任何非原生档时,
+            // 虚拟屏的模式表发布与镜像协商都会被系统拒绝。但 reset 事务本身
+            // (哪怕 no-op)会让紧随其后的创建被拒(2026-09-28 对照实验),因此
+            // 已在原生档时跳过。
+            let native = VirtualDisplayPresets.nativeBase(of: sidecar)
+            if sidecar.currentMode.map({ $0.width != native.width || $0.height != native.height }) ?? true {
+                mirror.resetToDefaultMode(displayID: sidecar.displayID)
+                Thread.sleep(forTimeInterval: 1.0)
+            }
             let handle = try factory.create(spec: spec, additionalModes: additionalModes)
             created = handle
             try mirror.mirror(display: sidecar.displayID, toMaster: handle.displayID)

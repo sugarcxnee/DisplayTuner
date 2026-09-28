@@ -59,19 +59,34 @@ DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 swift test --filter testDangerousVirtualDispl
 
 > **跑危险测试前先退出 DisplayTuner 菜单栏应用。** 应用与测试进程写同一份日志、同时监听屏幕变化:测试把 Sidecar 重置到原生档后,应用侧的自动恢复会立刻把档位拉回去,虚拟屏模式表发布随之被系统拒绝(真机日志证实过此跨进程竞争,极易误判为 WindowServer 异常)。
 
-### 环境状态与"解毒"(2026-09-28 真机探针结论)
+### 环境状态与"同进程查询毒化"(2026-09-28 真机探针结论,已三次复现)
 
-虚拟屏创建失败(`not published to CG table` / 私有错误码 1014)**不一定是代码问题**,
-用裸创建探针(不碰 Sidecar 的 create→destroy)可以区分:
+**对 Sidecar displayID 的模式类查询(`CGDisplayCopyDisplayMode` /
+`CGDisplayCopyAllDisplayModes`)会抑制同进程随后的虚拟屏创建**——
+`applySettings` 声明的模式表不发布到 CG 层(报 `not published within 3s`),
+等待 25 秒以上不解除;重启后依旧复现,属确定性系统行为而非状态污染。
 
-- 对 Sidecar 做过档位切换(哪怕切回它已在的原生档)之后,虚拟屏创建会被
-  WindowServer **持续拒绝**,等待 5 分钟以上也不自愈;
-- 历史日志显示 **Sidecar 断开重连**(displayID 变化)后创建恢复;注销重登同理;
-- 连续失败的重试本身会加剧该状态——复验失败后不要立刻反复重试,
-  先重连 Sidecar 再试。
+对照实验边界:
 
-因此播种/虚拟屏失败时按此顺序排查:① app 是否退出(跨进程自扰) →
-② 裸创建探针(能力是否被拒) → ③ 重连 Sidecar 解毒 → ④ 再跑完整流程。
+| create 之前的调用 | 创建结果 |
+|---|---|
+| 无任何 CG 查询 | ✅ |
+| `CGGetOnlineDisplayList`(列 ID) | ✅ |
+| `CGDisplayIsBuiltin` / `CGMainDisplayID`(分类) | ✅ |
+| `CGDisplayCopyDisplayMode`(当前模式) | ❌ |
+| `CGDisplayCopyAllDisplayModes`(全表) | ❌ |
+
+由此得出两条流程纪律:
+
+1. **播种(一次性流程)必须由"从未查询过 Sidecar 模式"的进程执行**:
+   displayID 用 OnlineList+分类推断,基准档先验传入。
+   `testDangerousSeedHighResolutionModes` 即此设计,已真机验收(2026-09-28)。
+2. **虚拟屏会话(app 内长驻)当前受此阻断**:菜单打开即枚举=毒化,随后的
+   start 必败。需要 helper 进程架构(枚举与创建分进程)才能修复,
+   见 `testDangerousMirrorFallbackWhenSidecarAtHighMode` 的跳过说明。
+
+失败排查顺序:① app 是否退出(跨进程自扰) → ② 本进程是否查询过 Sidecar 模式
+(同进程毒化) → ③ 裸创建探针(不碰 Sidecar 的 create→destroy)确认能力。
 
 ## 手动验收清单
 
