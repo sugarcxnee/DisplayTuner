@@ -9,6 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBar: MenuBarController!
     private var alertPresenter: SafetyAlertPresenter!
     private var screenChangeObserver: NSObjectProtocol?
+    /// 防抖工作项:镜像协商/切档会触发连续多次屏幕参数变化,
+    /// 逐次立即刷新+恢复会与瞬态状态打架(v0.2 线真机教训),统一防抖 1.5 秒。
+    private var screenChangeWork: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 日志先行:控制台 + Application Support 轮转文件
@@ -61,16 +64,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         menuBar = MenuBarController(viewModel: viewModel, router: router, logger: logger)
 
-        // 显示器热插拔 / Sidecar 连接断开 → 刷新 + 自动恢复
+        // 显示器热插拔 / Sidecar 连接断开 → 防抖后刷新 + 自动恢复
         screenChangeObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             guard let self = self else { return }
-            self.logger.info("screen parameters changed", context: "App")
-            self.viewModel.refreshDisplays()
-            self.viewModel.autoRestoreIfNeeded()
+            self.logger.info("screen parameters changed (debounced)", context: "App")
+            self.screenChangeWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self = self else { return }
+                self.viewModel.refreshDisplays()
+                self.viewModel.autoRestoreIfNeeded()
+            }
+            self.screenChangeWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
         }
 
         // 启动即枚举;自动恢复稍后一拍,让状态先就绪
@@ -86,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let observer = screenChangeObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        screenChangeWork?.cancel()
         logger.info("DisplayTuner terminating", context: "App")
     }
 
