@@ -45,12 +45,16 @@ public final class VirtualDisplaySeeder: VirtualDisplaySeeding {
     }
 
     public func seedHighResolutionModes(on sidecar: DisplayInfo) throws {
+        let base = VirtualDisplayPresets.nativeBase(of: sidecar)
+        logger.info(
+            "seeding high-resolution modes for \(sidecar.logDescriptor) (base \(base.width)x\(base.height))",
+            context: "Seeder"
+        )
         // 前置:一律把 Sidecar 切回锚定的原生档(真机实验:Sidecar 处于任何
         // 非原生档时,虚拟屏的模式表发布与镜像协商都会被系统拒绝)。
         mirror.resetToDefaultMode(displayID: sidecar.displayID)
         Thread.sleep(forTimeInterval: 1.0)
 
-        let base = VirtualDisplayPresets.nativeBase(of: sidecar)
         let presets = VirtualDisplayPresets.presets(baseWidth: base.width, baseHeight: base.height)
         guard let preferred = presets.first(where: { $0.isRecommended })?.spec else {
             throw VirtualDisplayError.createFailed("no usable presets for seeding")

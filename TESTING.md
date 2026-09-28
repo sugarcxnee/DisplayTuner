@@ -57,6 +57,8 @@ DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 swift test --filter testDangerousApplyAndRoll
 DISPLAYTUNER_RUN_DANGEROUS_TESTS=1 swift test --filter testDangerousVirtualDisplayRoundtripOnSidecar
 ```
 
+> **跑危险测试前先退出 DisplayTuner 菜单栏应用。** 应用与测试进程写同一份日志、同时监听屏幕变化:测试把 Sidecar 重置到原生档后,应用侧的自动恢复会立刻把档位拉回去,虚拟屏模式表发布随之被系统拒绝(真机日志证实过此跨进程竞争,极易误判为 WindowServer 异常)。
+
 ## 手动验收清单
 
 1. `make build && make run` —— 应用启动后:

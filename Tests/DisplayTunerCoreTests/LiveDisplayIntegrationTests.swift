@@ -8,6 +8,11 @@ import CoreGraphics
 /// - `DISPLAYTUNER_RUN_LIVE_TESTS=1`:允许在真实 macOS 上做**只读**枚举;
 /// - `DISPLAYTUNER_RUN_DANGEROUS_TESTS=1`:允许**真实切换**显示器模式。
 ///   仅在连接了可承受短暂黑屏的副屏、且有人在场时启用!
+///
+/// 跑危险测试(尤其播种/虚拟屏)前**先退出 DisplayTuner 菜单栏应用**:
+/// 应用与测试进程写同一份日志、同时监听屏幕变化 —— 应用侧的自动恢复会
+/// 在测试把 Sidecar 重置到原生档后立刻把档位拉回去,导致虚拟屏模式表
+/// 发布被系统拒绝(真机日志已证实此跨进程竞争,易误判为 WindowServer 异常)。
 final class LiveDisplayIntegrationTests: XCTestCase {
 
     private var liveAllowed: Bool {
