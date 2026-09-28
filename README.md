@@ -65,6 +65,14 @@ DisplayTuner.app/Contents/MacOS/DisplayTuner --export-config ~/backup.json
 DisplayTuner.app/Contents/MacOS/DisplayTuner --import-config ~/backup.json
 ```
 
+## 🎯 iPad 没有高分辨率档?点一次"解锁"
+
+iPad 随航的出厂模式表只含保守报价(如 1180×820),不是硬件不能,是系统没列。
+对未解锁的 Sidecar,菜单会显示 **"解锁高分辨率模式(一次性)"**:点击后自动
+完成一次"创建高档虚拟屏 → 镜像数秒 → 撤除",系统会把完整模式能力写入
+iPad 的持久显示配置 —— 之后 2360×1640 等高档直接出现在菜单,断开重连、
+重启都不丢,永远不需要再碰虚拟屏。全程约 5 秒,无确认框,失败自动清理。
+
 ## ⚠️ 安全设计:倒计时回滚
 
 **修改显示模式可能造成黑屏、花屏或布局错乱。** DisplayTuner 的每次切换都走同一条安全路径:
