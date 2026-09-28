@@ -151,6 +151,35 @@ final class MenuModelBuilderTests: XCTestCase {
             .contains { $0.title == "当前随航连接未提供更高分辨率模式" && !$0.isEnabled })
     }
 
+    func testUnlockedFreeSidecarShowsSeedEntry() {
+        // 原始形态(单档、无锚点变体):显示一次性解锁入口
+        let sidecar = DisplayCatalog.display(from: Fixtures.sidecarDisplay(modes: [
+            Fixtures.mode(1180, 820),
+        ]))
+        let menu = buildWith(displays: [sidecar])
+
+        let seedEntry = menu.entries
+            .compactMap(\.children)
+            .flatMap { $0 }
+            .first { $0.title == "解锁高分辨率模式(一次性)" }
+        XCTAssertNotNil(seedEntry, "未解锁的 Sidecar 应提供播种入口")
+        XCTAssertEqual(seedEntry?.action,
+                       .seedHighResolutionModes(displayStableID: sidecar.stableID))
+    }
+
+    func testUnlockedSidecarHidesSeedEntry() {
+        // 已解锁(锚点 + 高档):只显示说明行,不显示播种入口
+        let sidecar = DisplayCatalog.display(from: Fixtures.sidecarDisplay(modes: [
+            Fixtures.mode(1180, 820),
+            Fixtures.mode(2360, 1640),
+            Fixtures.mode(1180, 820, ioFlags: DisplayModeIOFlags.valid),
+        ]))
+        let menu = buildWith(displays: [sidecar])
+
+        let titles = menu.entries.compactMap(\.children).flatMap { $0 }.map(\.title)
+        XCTAssertFalse(titles.contains("解锁高分辨率模式(一次性)"), "已解锁不再提供播种入口")
+    }
+
     func testExternalDisplayNeverShowsSidecarHint() {
         let external = DisplayCatalog.display(from: Fixtures.externalDisplay())
         let menu = buildWith(displays: [external])
