@@ -152,6 +152,33 @@ final class TunerViewModelTests: XCTestCase {
         XCTAssertTrue(controller.applyCalls[0].hasPrefix("2560x1600@60-hidpi"))
     }
 
+    func testAutoRestoreFallsBackToSameSizeWhenSavedHiDPIKeyNotListed() {
+        // Sidecar 冷启动形态:保存的是影子 HiDPI key,但当前快照的模式表
+        // 只有同尺寸 1x 条目(缓存未捕获、影子未注入)—— 按 sizeKey 回退
+        // 恢复尺寸,清晰度升级留给 apply 内部再尝试。
+        let coldSidecar = DisplayCatalog.display(from: Fixtures.sidecarDisplay(
+            currentModeIndex: 1,
+            modes: [
+                Fixtures.mode(1116, 820, hidpi: false),
+                Fixtures.mode(1280, 940, hidpi: false),
+            ]
+        ))
+        displayService.displays = [coldSidecar]
+
+        var config = configStore.config
+        config.perDisplay[coldSidecar.stableID] = PerDisplayConfig(modeKey: "1116x820@60-hidpi")
+        configStore.config = config
+
+        viewModel.refreshDisplays()
+        viewModel.autoRestoreIfNeeded()
+
+        XCTAssertEqual(controller.applyCalls.count, 1, "应经 sizeKey 回退恢复一次")
+        XCTAssertTrue(
+            controller.applyCalls[0].hasPrefix("1116x820@60@"),
+            "回退目标应是同尺寸条目,实际 \(controller.applyCalls)"
+        )
+    }
+
     func testAutoRestoreSkipsWhenAlreadyAtSavedMode() {
         var config = configStore.config
         config.perDisplay[sidecarDisplay.stableID] = PerDisplayConfig(

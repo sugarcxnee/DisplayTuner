@@ -22,13 +22,17 @@ public final class CoreGraphicsDisplayService: DisplayService {
 
     private let logger: DTLogger
     private let nameProvider: DisplayNameProvider
+    /// Sidecar 影子 HiDPI 缓存(与 ModeController 共享同一实例,由组合根注入)。
+    private let hidpiCache: HiDPIModeCache
 
     public init(
         nameProvider: @escaping DisplayNameProvider = { _ in nil },
-        logger: DTLogger = DTLogger()
+        logger: DTLogger = DTLogger(),
+        hidpiCache: HiDPIModeCache = HiDPIModeCache()
     ) {
         self.logger = logger
         self.nameProvider = nameProvider
+        self.hidpiCache = hidpiCache
     }
 
     public func snapshotDisplays() -> [DisplayInfo] {
@@ -78,8 +82,20 @@ public final class CoreGraphicsDisplayService: DisplayService {
     private func rawRecord(for displayID: CGDirectDisplayID) -> RawDisplayRecord {
         let name = nameProvider(displayID) ?? ""
         let current = CGDisplayCopyDisplayMode(displayID)
-
-        let modes = rawModes(for: displayID, includeHidden: false)
+        // Sidecar 影子 HiDPI:清晰态的 2x 档从不进枚举(2026-09-28 真机定性),
+        // 读到即捕获对象引用;已捕获的影子条目并入模式表,让菜单可见、可点选。
+        hidpiCache.captureIfHiDPI(current, displayID: displayID)
+        let shadowEntries = hidpiCache.rawEntries(for: displayID)
+        let modes = ShadowModeMerge.merge(
+            enumModes: rawModes(for: displayID, includeHidden: false),
+            shadowModes: shadowEntries
+        )
+        if !shadowEntries.isEmpty {
+            logger.debug(
+                "merged \(shadowEntries.count) shadow HiDPI mode(s) into \(displayID) mode table",
+                context: "DisplayService"
+            )
+        }
         let currentIndex = modes.firstIndex { mode in
             guard let current = current else { return false }
             return mode.width == Int(current.width)

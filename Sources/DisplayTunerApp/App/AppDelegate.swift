@@ -22,11 +22,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         logger.setLevel(configStore.config.logLevel)
 
         let nameProvider = NSScreenNameProvider()
+        // 影子 HiDPI 缓存:service(快照捕获/模式表注入)与 controller(应用回退)
+        // 必须共享同一实例 —— Sidecar 的 2x 对象不进枚举,只在两处协作下可用。
+        let hidpiCache = HiDPIModeCache()
         let displayService = CoreGraphicsDisplayService(
             nameProvider: { id in nameProvider.name(for: id) },
-            logger: logger
+            logger: logger,
+            hidpiCache: hidpiCache
         )
-        let modeController = CoreGraphicsDisplayModeController(logger: logger)
+        let modeController = CoreGraphicsDisplayModeController(logger: logger, hidpiCache: hidpiCache)
         let enhancer = ExperimentalSidecarEnhancer(
             displayService: displayService,
             privateServices: PrivateDisplayServices(logger: logger),

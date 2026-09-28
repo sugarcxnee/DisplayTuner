@@ -46,6 +46,17 @@ public struct DisplayModeInfo: Equatable, Hashable, Sendable {
         "\(width)x\(height)@\(Int(refreshRate.rounded()))\(isHiDPI ? "-hidpi" : "")"
     }
 
+    /// modeKey 的尺寸部分(不含 -hidpi 后缀)。同一逻辑档的 1x/2x 变体
+    /// sizeKey 相同,用于持久化偏好的跨渲染倍率匹配。
+    public var sizeKey: String {
+        "\(width)x\(height)@\(Int(refreshRate.rounded()))"
+    }
+
+    /// 从持久化的 modeKey 提取尺寸部分("1920x1080@60-hidpi" → "1920x1080@60")。
+    public static func sizeKey(ofModeKey key: String) -> String {
+        key.hasSuffix("-hidpi") ? String(key.dropLast("-hidpi".count)) : key
+    }
+
     /// 菜单展示:"1920×1080 HiDPI @ 60Hz"。
     public var title: String {
         let refresh = Int(refreshRate.rounded())

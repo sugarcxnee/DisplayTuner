@@ -276,7 +276,12 @@ public final class TunerViewModel {
             }
             autoRestoreCooldowns[display.stableID] = Date().addingTimeInterval(Self.autoRestoreCooldown)
             let candidates = display.modes + (extraModes[display.stableID] ?? [])
-            guard let target = candidates.first(where: { $0.modeKey == savedKey }) else {
+            // 精确 modeKey 未命中时按 sizeKey 回退:保存的是 HiDPI 档而当前
+            // 快照暂无影子条目(冷启动缓存未捕获)时,恢复同尺寸 1x 条目,
+            // apply 内部会再次尝试升级到 HiDPI。
+            guard let target = candidates.first(where: { $0.modeKey == savedKey })
+                    ?? candidates.first(where: { $0.sizeKey == DisplayModeInfo.sizeKey(ofModeKey: savedKey) })
+            else {
                 logger.info(
                     "saved mode \(savedKey) no longer available on \(display.logDescriptor), skipping",
                     context: "ViewModel"
