@@ -44,9 +44,46 @@ final class SeedEngineTests: XCTestCase {
 
     // MARK: - 基准与目标档
 
-    func testTargetSpecRoundsTo10() {
-        let spec = SeedEngine.targetSpec(base: DisplaySize(width: 1181, height: 823))
-        XCTAssertEqual(spec.key, "2360x1650")
+    func testTargetSpecIsExactDouble() {
+        // 精确 ×2:边栏显示态锚点 1116×2 = 2232,任何取整都会偏离能力边界
+        let sidebar = SeedEngine.targetSpec(base: DisplaySize(width: 1116, height: 820))
+        XCTAssertEqual(sidebar.key, "2232x1640")
+
+        let hidden = SeedEngine.targetSpec(base: DisplaySize(width: 1180, height: 820))
+        XCTAssertEqual(hidden.key, "2360x1640")
+    }
+
+    /// 边栏几何(2026-09-28 实测):边栏显示时锚点/顶档整体平移一个家族,
+    /// 面积相对判定在两态下结论必须一致。
+    private func sidebarShownSidecar(unlocked: Bool) -> DisplayInfo {
+        var modes = [
+            Fixtures.mode(1116, 820),
+            Fixtures.mode(1116, 820, ioFlags: DisplayModeIOFlags.valid),   // 锚点变体
+        ]
+        if unlocked {
+            modes.append(Fixtures.mode(2232, 1640))
+        }
+        return DisplayCatalog.display(from: Fixtures.sidecarDisplay(modes: modes))
+    }
+
+    func testUnlockCheckHoldsUnderSidebarGeometry() {
+        XCTAssertFalse(
+            SeedEngine.hasHighResolutionModes(sidebarShownSidecar(unlocked: false)),
+            "边栏态未解锁:判定不变"
+        )
+        XCTAssertTrue(
+            SeedEngine.hasHighResolutionModes(sidebarShownSidecar(unlocked: true)),
+            "边栏态已解锁(2232 顶档 + 1116 锚):判定不变"
+        )
+    }
+
+    func testSeedTargetUnderSidebarGeometry() throws {
+        // 边栏态播种:目标必须是当前几何锚点的精确 ×2
+        let outcome = try engine.seedHighResolutionModes(on: sidebarShownSidecar(unlocked: false))
+        guard case .seeded(let key) = outcome else {
+            return XCTFail("应执行播种: \(outcome)")
+        }
+        XCTAssertEqual(key, "2232x1640", "边栏态目标 = 1116×2,而非取整后的 2230")
     }
 
     func testNativeBasePrefersAnchorThenFlaggedThenSmall() {

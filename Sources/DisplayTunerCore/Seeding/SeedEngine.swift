@@ -51,6 +51,11 @@ public final class SeedEngine: SidecarSeeding {
 
     /// 表里是否存在超过原生档(锚定尺寸)两倍面积的安全模式。
     /// 已解锁的机器不需要播种入口,菜单直接显示高档。
+    /// 判定注(2026-09-28 边栏几何实测):Sidecar 的模式表是按"当前有效面板
+    /// 面积"实时生成的缩放阶梯,iPad 边栏显示与否会让锚点整体平移
+    /// (1180×820 ↔ 1116×820,顶档 2360 ↔ 2232,家族原位互换)。面积相对
+    /// 判定在两种几何下结论一致(边栏态锚点配边栏态顶档,比例不变),
+    /// 故本判定不受边栏状态影响 —— 但不得改为与具体家族/档位数挂钩的判定。
     public static func hasHighResolutionModes(_ display: DisplayInfo) -> Bool {
         guard let native = display.nativeAnchoredSize else { return false }
         let nativeArea = native.width * native.height
@@ -78,12 +83,12 @@ public final class SeedEngine: SidecarSeeding {
     }
 
     /// 播种目标档:基准 ×2(接近 iPad 物理像素,点对点)。
+    /// 精确 ×2,不做任何取整 —— 锚点宽 ×2 未必是 10 的倍数(边栏显示态的
+    /// 锚点 1116×2 = 2232,取整到 10 会得到 2230,偏离真实能力边界 2px,
+    /// 目标档将永远无法命中)。旧 rounded10 只在 1180×820→2360 这条路径上
+    /// 碰巧正确(v0.2 presets 时代的遗留)。
     static func targetSpec(base: DisplaySize) -> VirtualDisplaySpec {
-        VirtualDisplaySpec(width: rounded10(base.width * 2), height: rounded10(base.height * 2))
-    }
-
-    private static func rounded10(_ value: Int) -> Int {
-        Int((Double(value) / 10).rounded() * 10)
+        VirtualDisplaySpec(width: base.width * 2, height: base.height * 2)
     }
 
     // MARK: - 播种流程
