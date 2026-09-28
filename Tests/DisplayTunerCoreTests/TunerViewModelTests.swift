@@ -188,6 +188,27 @@ final class TunerViewModelTests: XCTestCase {
         XCTAssertTrue(controller.applyCalls.isEmpty, "保存的模式已不可用时不动作")
     }
 
+    func testAutoRestoreDoesNotSupersedePendingUserChange() {
+        // 场景(真机日志):保存偏好为高档,用户主动切回低档且尚在确认窗口,
+        // 切换引发的屏幕变化立刻触发自动恢复 —— 修复前恢复会把用户的新切换
+        // supersede 拉回旧偏好,随后回滚还会误清偏好。
+        var config = configStore.config
+        config.perDisplay[sidecarDisplay.stableID] = PerDisplayConfig(modeKey: "2560x1600@60-hidpi")
+        configStore.config = config
+
+        viewModel.refreshDisplays()
+        viewModel.perform(.selectMode(
+            displayStableID: sidecarDisplay.stableID,
+            modeKey: "1920x1080@60-hidpi"
+        ))
+        XCTAssertEqual(controller.applyCalls.count, 1)
+
+        viewModel.autoRestoreIfNeeded()
+
+        XCTAssertEqual(controller.applyCalls.count, 1, "用户切换确认窗口内,自动恢复必须让位")
+        XCTAssertTrue(viewModel.coordinator.hasPendingConfirmation, "pending 不得被恢复顶掉")
+    }
+
     // MARK: - 全局开关
 
     func testToggleAutoRestoreRoundTrip() {

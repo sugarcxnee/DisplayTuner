@@ -202,7 +202,11 @@ public final class TunerViewModel {
     /// 走与手动选择完全相同的安全倒计时路径。
     public func autoRestoreIfNeeded() {
         guard configStore.config.autoRestore else { return }
+        // 用户主动切换尚在确认窗口内:新意图优先,恢复不得反打
+        // (真机表现:切档 1.5 秒后被恢复 supersede 拉回旧偏好,偏好还被误清)
+        let pendingStableID = coordinator.pendingChange?.displayStableID
         for display in displays {
+            if display.stableID == pendingStableID { continue }
             guard let savedKey = configStore.config.perDisplay[display.stableID]?.modeKey else {
                 continue
             }
