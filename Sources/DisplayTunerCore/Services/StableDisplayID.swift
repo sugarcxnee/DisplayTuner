@@ -21,8 +21,19 @@ public enum StableDisplayID {
     }
 
     /// 从 `RawDisplayRecord` 直接生成。
+    ///
+    /// Sidecar 例外(2026-09-28 真机实测):其 serialNumber 随 iPad 边栏
+    /// 显示状态漂移 —— 同一台 iPad 在日志中出现过两个稳定 ID,导致
+    /// autoRestore 偏好在两态间互不相通。Sidecar 的 vendor/model 恒定,
+    /// 改用二者构成身份;同型号多台 iPad 并发随航的碰撞在此场景下可接受。
     public static func make(for record: RawDisplayRecord) -> String {
-        make(
+        if SidecarHeuristic.isLikelySidecar(record) {
+            return String(
+                format: "display-sidecar-v1-%05x-%05x",
+                record.vendorNumber, record.modelNumber
+            )
+        }
+        return make(
             vendor: record.vendorNumber,
             model: record.modelNumber,
             serial: record.serialNumber,
