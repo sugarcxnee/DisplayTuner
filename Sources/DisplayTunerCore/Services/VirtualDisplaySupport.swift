@@ -173,17 +173,21 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
         // 仍在线**(成功销毁则正常离线)——盲目重试会逐次堆积残影(一次失败曾留
         // 三具)。因此每次重试前必须确认上一轮残影已离线,等不到就停止重试。
         var lastError: Error = VirtualDisplayError.createFailed("unreachable")
-        for attempt in 0..<3 {
+        for attempt in 0..<2 {
             do {
                 return try attemptCreate(spec: spec, additionalModes: additionalModes)
             } catch {
                 lastError = error
-                guard attempt < 2 else { break }
+                guard attempt < 1 else { break }
                 // 注意:失败 displayID 经实例属性而非 inout 传递 —— throws 边界上
                 // 的 inout 写回在优化构建(Release)下不可靠,曾致残影检查静默失效。
                 let ghost = lastFailedDisplayID
                 lastFailedDisplayID = 0
-                if ghost != 0, !Self.waitUntilOffline(displayID: ghost, timeout: 5) {
+                var ghostCleared = true
+                if ghost != 0 {
+                    ghostCleared = Self.waitUntilOffline(displayID: ghost, timeout: 5)
+                }
+                if !ghostCleared {
                     logger.error(
                         "failed attempt left virtual display \(ghost) online; aborting retries to avoid residue buildup",
                         context: "VirtualDisplay"
@@ -191,7 +195,7 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
                     break
                 }
                 logger.info(
-                    "create attempt \(attempt + 1) failed (\(error)); backing off before retry",
+                    "create attempt \(attempt + 1) failed (\(error)); ghost=\(ghost) cleared=\(ghostCleared); backing off before retry",
                     context: "VirtualDisplay"
                 )
                 Thread.sleep(forTimeInterval: 1.0 + Double(attempt) * 2.0)
@@ -228,7 +232,7 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
             let table = [spec] + additionalModes.filter { $0.key != spec.key }
             let object = try buildDisplay(table: table)
             displayObject = object
-            let displayID = try Self.activate(object: object, spec: spec)
+            let displayID = try activate(object: object, spec: spec)
             logger.info(
                 "virtual display created: \(spec.key) with \(table.count) mode(s) (id \(displayID))",
                 context: "VirtualDisplay"
@@ -372,17 +376,17 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
 
     /// 用公共 CG API 激活目标模式并验证(实验验证的事实:applySettings 只定义模式表,
     /// 激活模式必须显式切换)。
-    private static func activate(object: AnyObject, spec: VirtualDisplaySpec) throws -> UInt32 {
+    private func activate(object: AnyObject, spec: VirtualDisplaySpec) throws -> UInt32 {
         // 轮询等待两件事:WindowServer 分配 displayID + 目标档出现在 CG 模式表。
         // applySettings 只是"声明",发布到 CG 层是异步的(实测需数百毫秒),
         // 表未就绪就去激活会报"mode not in list"——表现为创建/切档时好时坏。
         var displayID: UInt32 = 0
         var tableReady = false
         for _ in 0..<30 {   // 最多 3 秒
-            let candidate = sendU32(object, "displayID")
+            let candidate = Self.sendU32(object, "displayID")
             if candidate != 0 {
                 if displayID == 0 { displayID = candidate }
-                if cgTableContains(displayID: candidate, spec: spec) {
+                if Self.cgTableContains(displayID: candidate, spec: spec) {
                     tableReady = true
                     break
                 }
@@ -393,11 +397,19 @@ public final class CoreDisplayVirtualDisplayFactory: VirtualDisplayCreating {
             throw VirtualDisplayError.createFailed("displayID not assigned")
         }
         guard tableReady else {
+            // 在抛错点记录(displayID 此处确定非 0):失败后在 catch 里重读对象
+            // 属性的方式在 app 进程实测读到过 0,导致残影检查静默失效。
+            lastFailedDisplayID = displayID
             throw VirtualDisplayError.activationFailed(
                 "mode \(spec.key) not published to CG table within 3s after applySettings"
             )
         }
-        try activateMode(displayID: displayID, spec: spec)
+        do {
+            try Self.activateMode(displayID: displayID, spec: spec)
+        } catch {
+            lastFailedDisplayID = displayID
+            throw error
+        }
         return displayID
     }
 
