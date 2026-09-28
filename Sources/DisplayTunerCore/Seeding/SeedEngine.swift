@@ -32,15 +32,19 @@ public final class SeedEngine: SidecarSeeding {
     private let factory: VirtualDisplayCreating
     private let mirror: DisplayMirrorControlling
     private let logger: DTLogger
+    /// 时钟注入:生产为真实线程休眠,测试注入空实现(流程时序不参与断言)。
+    private let sleep: (TimeInterval) -> Void
 
     public init(
         factory: VirtualDisplayCreating,
         mirror: DisplayMirrorControlling,
-        logger: DTLogger = DTLogger()
+        logger: DTLogger = DTLogger(),
+        sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
     ) {
         self.factory = factory
         self.mirror = mirror
         self.logger = logger
+        self.sleep = sleep
     }
 
     // MARK: - 解锁判定与基准
@@ -104,25 +108,25 @@ public final class SeedEngine: SidecarSeeding {
         if let current = sidecar.currentMode,
            current.width != base.width || current.height != base.height {
             mirror.resetToDefaultMode(displayID: sidecar.displayID)
-            Thread.sleep(forTimeInterval: 1.0)
+            sleep(1.0)
         }
 
         var handle: VirtualDisplayHandle?
         do {
             let created = try factory.create(spec: spec)
             handle = created
-            Thread.sleep(forTimeInterval: 1.0)   // 创建后稳定(实验:过早镜像会被拒)
+            sleep(1.0)   // 创建后稳定(实验:过早镜像会被拒)
 
             try mirror.mirror(display: sidecar.displayID, toMaster: created.displayID)
             guard mirror.isInMirrorSet(sidecar.displayID) else {
                 throw VirtualDisplayError.createFailed("镜像未生效")
             }
-            Thread.sleep(forTimeInterval: 2.0)   // 等系统把高档写入持久模式表
+            sleep(2.0)   // 等系统把高档写入持久模式表
 
             try mirror.unmirror(display: sidecar.displayID)
             factory.destroy(created)
             handle = nil
-            Thread.sleep(forTimeInterval: 0.5)   // 拔出稳定
+            sleep(0.5)   // 拔出稳定
             logger.info("seeded high-resolution modes for \(sidecar.logDescriptor)", context: "Seed")
         } catch {
             if let created = handle {
