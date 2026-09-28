@@ -64,25 +64,85 @@ public enum DisplayCatalog {
     }
 
     /// 模式解析:同一 modeKey 去重(当前模式优先保留),保持首次出现顺序。
+    /// 模式解析(两层收敛):
+    /// 1. 同逻辑尺寸(宽×高@刷新率)收敛为一条 —— **恒取 HiDPI 变体**。
+    ///    真机实测(2026-09-28):Sidecar 同尺寸共存 1x/2x 变体,1x 渲染被拉伸
+    ///    到面板导致字体发虚("切档后变糊"的根因);系统自身选档恒为 2x。
+    ///    菜单/配置从此不再暴露 1x 条目。
+    /// 2. 同 modeKey 去重(当前档优先保留)。
+    /// 当前档标记按尺寸组传播:当前停在 1x 变体时,收敛后的 HiDPI 条目
+    /// 仍标记 isCurrent(菜单勾选正确;用户再点该条即真正升到 2x)。
     public static func parseModes(_ record: RawDisplayRecord) -> [DisplayModeInfo] {
         let parsed = record.modes.enumerated().map { index, raw in
             modeInfo(from: raw, isCurrent: index == record.currentModeIndex)
         }
 
-        var byKey: [String: DisplayModeInfo] = [:]
+        struct Slot {
+            var entry: DisplayModeInfo
+            var sizeCurrent: Bool
+        }
+        var bySize: [String: Slot] = [:]
         var order: [String] = []
+
+        func sizeKey(_ mode: DisplayModeInfo) -> String {
+            "\(mode.width)x\(mode.height)@\(Int(mode.refreshRate.rounded()))"
+        }
+        func rank(_ mode: DisplayModeInfo) -> Int {
+            // HiDPI(2) > 当前(1) > 其他(0)
+            (mode.isHiDPI ? 2 : 0) + (mode.isCurrent ? 1 : 0)
+        }
+
         for mode in parsed {
+            let key = sizeKey(mode)
+            if var slot = bySize[key] {
+                slot.sizeCurrent = slot.sizeCurrent || mode.isCurrent
+                if rank(mode) > rank(slot.entry) {
+                    slot.entry = mode
+                }
+                bySize[key] = slot
+            } else {
+                bySize[key] = Slot(entry: mode, sizeCurrent: mode.isCurrent)
+                order.append(key)
+            }
+        }
+
+        let collapsed = order.compactMap { key -> DisplayModeInfo? in
+            guard var slot = bySize[key] else { return nil }
+            if slot.sizeCurrent && !slot.entry.isCurrent {
+                slot.entry = withCurrent(slot.entry, true)
+            }
+            return slot.entry
+        }
+
+        // 同 modeKey 去重(理论已无重复,防御性保留)
+        var byKey: [String: DisplayModeInfo] = [:]
+        var keyOrder: [String] = []
+        for mode in collapsed {
             if let existing = byKey[mode.modeKey] {
-                // 同 key 两条时保留当前那条,否则保留先出现的
                 if mode.isCurrent && !existing.isCurrent {
                     byKey[mode.modeKey] = mode
                 }
             } else {
                 byKey[mode.modeKey] = mode
-                order.append(mode.modeKey)
+                keyOrder.append(mode.modeKey)
             }
         }
-        return order.compactMap { byKey[$0] }
+        return keyOrder.compactMap { byKey[$0] }
+    }
+
+    private static func withCurrent(_ mode: DisplayModeInfo, _ isCurrent: Bool) -> DisplayModeInfo {
+        DisplayModeInfo(
+            width: mode.width,
+            height: mode.height,
+            pixelWidth: mode.pixelWidth,
+            pixelHeight: mode.pixelHeight,
+            refreshRate: mode.refreshRate,
+            ioFlags: mode.ioFlags,
+            isHiDPI: mode.isHiDPI,
+            isCurrent: isCurrent,
+            isSafe: mode.isSafe,
+            isRecommended: mode.isRecommended
+        )
     }
 
     public static func modeInfo(from raw: RawModeRecord, isCurrent: Bool) -> DisplayModeInfo {

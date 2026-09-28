@@ -79,6 +79,8 @@ final class DisplayCatalogTests: XCTestCase {
     // MARK: - 模式解析
 
     func testDuplicateModesAreDeduplicated() {
+        // 2026-09-28 语义更新:同尺寸的 1x/HiDPI 变体收敛为一条 HiDPI
+        // (1x 渲染拉伸到面板是"切档变糊"的根因),不再作为独立条目保留。
         let record = RawDisplayRecord(
             displayID: 3,
             vendorNumber: 0x10AE,
@@ -90,12 +92,13 @@ final class DisplayCatalogTests: XCTestCase {
             modes: [
                 Fixtures.mode(1920, 1080),                    // key A
                 Fixtures.mode(1920, 1080, refresh: 60),       // key A 重复
-                Fixtures.mode(1920, 1080, hidpi: false),      // key B(非 HiDPI)
+                Fixtures.mode(1920, 1080, hidpi: false),      // 同尺寸 1x → 收敛
             ]
         )
         let modes = DisplayCatalog.parseModes(record)
-        XCTAssertEqual(modes.count, 2)
-        XCTAssertEqual(Set(modes.map(\.modeKey)).count, 2)
+        XCTAssertEqual(modes.count, 1)
+        XCTAssertTrue(modes[0].isHiDPI, "收敛后只保留 HiDPI 变体")
+        XCTAssertTrue(modes[0].isCurrent, "当前档标记传播到收敛条目")
     }
 
     func testCurrentModeIsPreferedAmongDuplicates() {
@@ -161,5 +164,47 @@ final class DisplayCatalogTests: XCTestCase {
         XCTAssertFalse(info.logDescriptor.contains("王五"))
         XCTAssertFalse(info.logDescriptor.contains("9abcdef0"))
         XCTAssertTrue(info.logDescriptor.hasPrefix("外接显示器#"))
+    }
+}
+
+
+// MARK: - 同尺寸变体收敛(2026-09-28 "切档变糊"根因)
+
+final class ModeVariantCollapseTests: XCTestCase {
+
+    private func record(_ modes: [RawModeRecord], current: Int = 0) -> RawDisplayRecord {
+        Fixtures.sidecarDisplay(currentModeIndex: current, modes: modes)
+    }
+
+    func testSameSizeVariantsCollapseToHiDPI() {
+        // 同尺寸 1x + 2x 共存 → 菜单只暴露 HiDPI 一条
+        let modes = DisplayCatalog.parseModes(record([
+            Fixtures.mode(1116, 820, hidpi: false),
+            Fixtures.mode(1116, 820, hidpi: true),
+        ]))
+        XCTAssertEqual(modes.count, 1, "同尺寸收敛为一条")
+        XCTAssertTrue(modes[0].isHiDPI, "收敛条目恒为 HiDPI 变体")
+    }
+
+    func testCurrentOnLowVariantMarksCollapsedEntryCurrent() {
+        // 当前停在 1x 变体:收敛后的 HiDPI 条目仍标记为当前(菜单勾选正确),
+        // 用户再点该条即真正升到 2x 渲染。
+        let modes = DisplayCatalog.parseModes(record([
+            Fixtures.mode(1116, 820, hidpi: true),
+            Fixtures.mode(1116, 820, hidpi: false),
+        ], current: 1))
+        XCTAssertEqual(modes.count, 1)
+        XCTAssertTrue(modes[0].isHiDPI)
+        XCTAssertTrue(modes[0].isCurrent, "当前标记按尺寸组传播")
+    }
+
+    func testDifferentSizesUnaffected() {
+        let modes = DisplayCatalog.parseModes(record([
+            Fixtures.mode(1116, 820),
+            Fixtures.mode(1600, 1200),
+            Fixtures.mode(1600, 1200, hidpi: false),
+        ]))
+        XCTAssertEqual(modes.count, 2)
+        XCTAssertTrue(modes.allSatisfy(\.isHiDPI))
     }
 }

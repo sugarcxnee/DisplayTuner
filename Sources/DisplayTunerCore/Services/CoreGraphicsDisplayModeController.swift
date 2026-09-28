@@ -25,6 +25,10 @@ public final class CoreGraphicsDisplayModeController: DisplayModeController {
 
     public func apply(_ mode: DisplayModeInfo, to display: DisplayInfo) throws -> AppliedChange {
         let displayID = display.displayID
+        // 目标规范化:同尺寸存在 HiDPI 变体时一律升级到它 —— 1x 渲染会被
+        // 拉伸到面板导致字体发虚(2026-09-28 真机"切档变糊"根因),任何
+        // 1x 目标(旧配置残留的 key 等)都不应被忠实执行。
+        let mode = highResolutionVariant(of: mode, in: display.modes)
 
         guard let currentCG = CGDisplayCopyDisplayMode(displayID) else {
             throw ModeApplicationError.displayNotFound(displayID)
@@ -110,6 +114,24 @@ public final class CoreGraphicsDisplayModeController: DisplayModeController {
     }
 
     /// 在该显示器可用模式里找到与目标"显示效果"一致的 CGDisplayMode。
+    /// 同尺寸的 HiDPI 变体(存在则返回之,否则原样返回)。
+    private func highResolutionVariant(
+        of mode: DisplayModeInfo,
+        in modes: [DisplayModeInfo]
+    ) -> DisplayModeInfo {
+        guard !mode.isHiDPI,
+              let hidpi = modes.first(where: {
+                  $0.isHiDPI && $0.width == mode.width && $0.height == mode.height
+                      && $0.refreshRate == mode.refreshRate
+              })
+        else { return mode }
+        logger.info(
+            "upgrading target \(mode.modeKey) to HiDPI variant \(hidpi.modeKey)",
+            context: "ModeController"
+        )
+        return hidpi
+    }
+
     private func findCGMode(
         displayID: UInt32,
         matching target: DisplayModeInfo

@@ -46,6 +46,7 @@ enum Fixtures {
         name: String = "张三的 iPad",
         displayID: UInt32 = 2,
         serialNumber: UInt32 = 0,
+        currentModeIndex: Int = 0,
         modes: [RawModeRecord] = []
     ) -> RawDisplayRecord {
         let sidecarModes = modes.isEmpty
@@ -60,7 +61,7 @@ enum Fixtures {
             bounds: CGRect(x: 1512, y: 0, width: 1920, height: 1080),
             isMain: false,
             isBuiltin: false,
-            currentModeIndex: 0,
+            currentModeIndex: currentModeIndex,
             modes: sidecarModes
         )
     }
