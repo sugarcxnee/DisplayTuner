@@ -26,6 +26,8 @@ final class CoreGraphicsDisplayServiceTests: XCTestCase {
             XCTAssertTrue(
                 display.stableID.hasPrefix("display-v1-")
                     || display.stableID.hasPrefix("display-fallback-v1-")
+                    || display.stableID.hasPrefix("display-sidecar-v1-"),
+                "稳定 ID 应为三种已知前缀之一,实际 \(display.stableID)"
             )
         }
     }

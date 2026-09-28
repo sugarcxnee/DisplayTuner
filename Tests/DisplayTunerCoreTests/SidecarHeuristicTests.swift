@@ -82,3 +82,35 @@ final class SidecarHeuristicTests: XCTestCase {
         XCTAssertFalse(SidecarHeuristic.isLikelySidecar(record))
     }
 }
+
+    func testVirtualEDIDAaplIPadAloneTriggersSidecar() {
+        // 2026-09-28 真机实测:Sidecar 连接后虚拟 EDID 三元组恰为
+        // vendor="aapl"(0x6161706C)/model="iPad"(0x69506164)。
+        // 即使无名称提供器(名称为空)、模式表全 1x,也应判定 Sidecar。
+        let record = RawDisplayRecord(
+            displayID: 118,
+            vendorNumber: 0x6161706C,
+            modelNumber: 0x69506164,
+            serialNumber: 2895310091,
+            name: "",
+            bounds: .zero,
+            currentModeIndex: 0,
+            modes: [Fixtures.mode(1116, 820, hidpi: false)]
+        )
+        XCTAssertTrue(SidecarHeuristic.isLikelySidecar(record))
+    }
+
+    func testExternalDisplayWithMismatchedAppleEDIDIsNotSidecar() {
+        // vendor 恰为 "aapl" 但 model 不是 "iPad"(真实 Apple 显示器形态)→ 不判 Sidecar
+        let record = RawDisplayRecord(
+            displayID: 7,
+            vendorNumber: 0x6161706C,
+            modelNumber: 0xA041,
+            serialNumber: 42,
+            name: "Studio Display",
+            bounds: .zero,
+            currentModeIndex: 0,
+            modes: [Fixtures.mode(3008, 1692)]
+        )
+        XCTAssertFalse(SidecarHeuristic.isLikelySidecar(record))
+    }
