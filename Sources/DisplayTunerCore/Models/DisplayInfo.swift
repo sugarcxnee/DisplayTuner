@@ -21,6 +21,17 @@ public enum DisplayCategory: String, Codable, CaseIterable, Sendable {
     }
 }
 
+/// 像素尺寸(可比较、可跨并发域)。
+public struct DisplaySize: Equatable, Sendable {
+    public let width: Int
+    public let height: Int
+
+    public init(width: Int, height: Int) {
+        self.width = width
+        self.height = height
+    }
+}
+
 /// 领域层显示器描述:枚举结果的最终形态,菜单与配置都围绕它工作。
 public struct DisplayInfo: Equatable, Sendable {
     public let stableID: String
@@ -35,6 +46,10 @@ public struct DisplayInfo: Equatable, Sendable {
     /// 已排序、已去重、已标记当前/安全/推荐的模式列表。
     public let modes: [DisplayModeInfo]
     public let currentMode: DisplayModeInfo?
+    /// 系统锚定的原生尺寸(去重前的原始模式表里同逻辑尺寸出现 ≥2 个变体,
+    /// 最大安全档即锚点 —— 镜像污染变体以原生尺寸为锚;去重后此信息丢失,
+    /// 故在枚举层计算)。用于播种的基准档与"是否已解锁"判定。
+    public let nativeAnchoredSize: DisplaySize?
 
     public init(
         stableID: String,
@@ -46,7 +61,8 @@ public struct DisplayInfo: Equatable, Sendable {
         bounds: CGRect,
         rotation: Double,
         modes: [DisplayModeInfo],
-        currentMode: DisplayModeInfo?
+        currentMode: DisplayModeInfo?,
+        nativeAnchoredSize: DisplaySize? = nil
     ) {
         self.stableID = stableID
         self.displayID = displayID
@@ -58,6 +74,7 @@ public struct DisplayInfo: Equatable, Sendable {
         self.rotation = rotation
         self.modes = modes
         self.currentMode = currentMode
+        self.nativeAnchoredSize = nativeAnchoredSize
     }
 
     /// 是否 Sidecar(分类或启发式命中)。

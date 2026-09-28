@@ -12,6 +12,8 @@ public final class TunerViewModel {
     public private(set) var lastOutcome: ModeChangeOutcome?
 
     public let coordinator: ModeChangeCoordinator
+    /// 高分辨率播种器(一次性流程,详见 SeedEngine)。
+    private let seeder: SidecarSeeding
 
     /// 模式变更结果的外部观察点:App 壳用它驱动安全确认框(NSAlert)。
     public var onOutcome: ((ModeChangeOutcome) -> Void)?
@@ -29,12 +31,18 @@ public final class TunerViewModel {
         configStore: ConfigStore,
         loginItems: LoginItemControlling,
         enhancer: SidecarEnhancer? = nil,
+        displaySeeder: SidecarSeeding? = nil,
         countdownScheduler: CountdownScheduler = DispatchCountdownScheduler(),
         logger: DTLogger = DTLogger()
     ) {
         self.displayService = displayService
         self.configStore = configStore
         self.enhancer = enhancer
+        self.seeder = displaySeeder ?? SeedEngine(
+            factory: CoreDisplayVirtualDisplayFactory(logger: logger),
+            mirror: CoreGraphicsMirrorService(logger: logger),
+            logger: logger
+        )
         self.loginItems = loginItems
         self.menuBuilder = MenuModelBuilder()
         self.logger = logger
@@ -101,6 +109,9 @@ public final class TunerViewModel {
 
         case .restoreDefaultMode(let stableID):
             restoreDefaultMode(on: stableID)
+
+        case .seedHighResolutionModes(let stableID):
+            seedHighResolutionModes(on: stableID)
 
         case .toggleExperimentalSidecar:
             toggleExperimentalSidecar()
@@ -182,6 +193,32 @@ public final class TunerViewModel {
         coordinator.request(mode: target, on: display)
     }
 
+    // MARK: - 播种
+
+    /// 解锁高分辨率模式:一次性播种流程,之后高档直接出现在模式列表。
+    /// 无需确认框(全程可逆,收尾回原生档)。
+    private func seedHighResolutionModes(on stableID: String) {
+        guard let display = displays.first(where: { $0.stableID == stableID && $0.isSidecar }) else {
+            logger.error(
+                "seeding target \(PrivacyRedactor.shortHash(stableID)) is not a connected sidecar",
+                context: "ViewModel"
+            )
+            return
+        }
+        do {
+            let outcome = try seeder.seedHighResolutionModes(on: display)
+            switch outcome {
+            case .alreadyUnlocked:
+                logger.info("already unlocked — no seeding needed", context: "ViewModel")
+            case .seeded:
+                logger.info("high-resolution modes unlocked — refresh to see them", context: "ViewModel")
+            }
+        } catch {
+            logger.error("unlock high-resolution failed: \(error)", context: "ViewModel")
+        }
+        refreshDisplays()
+    }
+
     private func toggleExperimentalSidecar() {
         var config = configStore.config
         config.experimentalSidecar.toggle()
@@ -195,8 +232,6 @@ public final class TunerViewModel {
         refreshExtraModesIfNeeded()
         rebuildMenu()
     }
-
-    // MARK: - 自动恢复
 
     // MARK: - 自动恢复
 

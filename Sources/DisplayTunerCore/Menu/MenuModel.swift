@@ -53,6 +53,7 @@ public enum MenuAction: Equatable {
     case selectMode(displayStableID: String, modeKey: String)
     case toggleFilter(displayStableID: String, filter: ModeFilter)
     case restoreDefaultMode(displayStableID: String)
+    case seedHighResolutionModes(displayStableID: String)
     case toggleExperimentalSidecar
     case toggleAutoRestore
     case toggleLaunchAtLogin

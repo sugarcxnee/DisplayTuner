@@ -29,8 +29,25 @@ public enum DisplayCatalog {
             bounds: record.bounds,
             rotation: record.rotation,
             modes: modes,
-            currentMode: modes.first(where: \.isCurrent)
+            currentMode: modes.first(where: \.isCurrent),
+            nativeAnchoredSize: anchoredNativeSize(rawModes: record.modes).map {
+                DisplaySize(width: $0.width, height: $0.height)
+            }
         )
+    }
+
+    /// 去重前的原始模式表中,同逻辑尺寸出现 ≥2 个变体的最大安全档 = 系统锚定的
+    /// 原生尺寸(镜像污染变体以原生尺寸为锚;去重后此信息丢失,故在此计算)。
+    static func anchoredNativeSize(rawModes: [RawModeRecord]) -> (width: Int, height: Int)? {
+        let bySize = Dictionary(grouping: rawModes, by: { "\($0.width)x\($0.height)" })
+        let anchored = bySize.values
+            .filter { $0.count >= 2 }
+            .compactMap { variants -> RawModeRecord? in
+                variants.first { $0.ioFlags & DisplayModeIOFlags.safe != 0 } ?? variants.first
+            }
+            .max { $0.width * $0.height < $1.width * $1.height }
+        guard let anchored = anchored else { return nil }
+        return (anchored.width, anchored.height)
     }
 
     /// 分类优先级:sidecar > builtin > main > external > unknown。
